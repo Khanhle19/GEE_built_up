@@ -2,7 +2,7 @@
  * Ứng dụng phân tích ảnh Sentinel-2 theo kỳ 2 tháng
  * Tác giả: Khanhle19
  * Phiên bản: 2.4
- * Ngày: 2025-03-10
+ * Ngày: 2025-04-19
  * Tính năng mới: Sử dụng phương pháp reduce để bảo toàn band
  */
 
@@ -307,7 +307,7 @@ function processImages() {
   var s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
     .filterBounds(aoi)
     .filterDate(startDate, endDate)
-    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40));  // Tăng ngưỡng mây lên 40%
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40)); 
   
   // Lưu lại collection hiện tại
   currentCollection = s2;
@@ -560,42 +560,36 @@ function interpolateNextPeriod(collection, periodsToInterpolate, index, availabl
   });
 }
 
-// Hàm tạo ảnh trung vị sử dụng phương pháp reduce
+// Hàm tạo ảnh đại diện bằng mosaic thay vì median
 function createMedianImage(collection, callback) {
-  // Lấy ảnh đầu tiên để có danh sách band
+  // Lấy ảnh đầu tiên để lấy tên các band có sẵn
   collection.first().bandNames().evaluate(function(bands) {
     if (!bands || bands.length === 0) {
       callback(null);
       return;
     }
-    
+
     try {
-      // Thay vì sử dụng median() trực tiếp, chúng ta xử lý từng band
-      var imageList = ee.List([]);
-      
-      // Tạo danh sách các band cần tính toán
-      var bandsToProcess = ['B2', 'B3', 'B4', 'B8', 'B11']; // Các band chính cần thiết
-      
-      // Kiểm tra xem band nào có trong danh sách bands
-      var availableBands = [];
-      bandsToProcess.forEach(function(band) {
-        if (bands.indexOf(band) !== -1) {
-          availableBands.push(band);
-        }
+      var bandsToProcess = ['B2', 'B3', 'B4', 'B8', 'B8A', 'B11', 'B12'];
+      var availableBands = bandsToProcess.filter(function(b) {
+        return bands.indexOf(b) !== -1;
       });
-      
-      // Nếu không có band nào khả dụng
+
       if (availableBands.length === 0) {
         callback(null);
         return;
       }
-      
-      // Xử lý toàn bộ collection để tạo median cho từng band
-      var medianImage = collection.select(availableBands).median();
-      
-      callback(medianImage);
+
+      // Sắp xếp để ảnh ít mây trước nếu có metadata
+      var sortedCollection = collection;
+      if (collection.first().propertyNames().contains('CLOUDY_PIXEL_PERCENTAGE')) {
+        sortedCollection = collection.sort('CLOUDY_PIXEL_PERCENTAGE');
+      }
+
+      var mosaicImage = sortedCollection.select(availableBands).mosaic();
+      callback(mosaicImage);
     } catch (e) {
-      showError('Lỗi khi tạo ảnh median: ' + e.message);
+      showError('Lỗi khi tạo ảnh mosaic: ' + e.message);
       callback(null);
     }
   });
@@ -629,12 +623,17 @@ function computeIndices(image, callback) {
       if (bands.indexOf('B11') !== -1 && bands.indexOf('B8') !== -1) {
         var ndbi = image.normalizedDifference(['B11', 'B8']).rename('ndbi');
         finalImage = finalImage.addBands(ndbi);
-        
-        // BUI = NDBI - NDVI (Chỉ tính sau khi có NDBI và NDVI)
-        if (finalImage.bandNames().indexOf('ndvi') !== -1) {
-          var bui = ndbi.subtract(ndvi).rename('bui');
-          finalImage = finalImage.addBands(bui);
-        }
+      }
+      
+      // Đảm bảo các band đã được cập nhật trước khi tính các chỉ số phụ thuộc
+      var updatedBands = finalImage.bandNames().getInfo();
+      
+      // Tính BUI = NDBI - NDVI nếu đã có cả NDBI và NDVI
+      if (updatedBands.indexOf('ndbi') !== -1 && updatedBands.indexOf('ndvi') !== -1) {
+        var ndbi_for_bui = finalImage.select('ndbi');
+        var ndvi_for_bui = finalImage.select('ndvi');
+        var bui = ndbi_for_bui.subtract(ndvi_for_bui).rename('bui');
+        finalImage = finalImage.addBands(bui);
       }
       
       // Chỉ số UI (Urban Index): UI = (SWIR2 - NIR) / (SWIR2 + NIR)
@@ -1009,7 +1008,6 @@ function displayImage(image) {
           showError('Ảnh thiếu band cần thiết cho tính toán NDBI: ' + missingBands.join(', '));
         }
       }
-      // Thêm phần code mới cho các chỉ số xây dựng khác
       // Phần hiển thị cho BUI
       else if (currentIndex === 'bui') {
         if (bandNames.indexOf('bui') !== -1) {
@@ -1061,6 +1059,7 @@ function displayImage(image) {
           showError('Ảnh thiếu band cần thiết cho tính toán UI: ' + missingBands.join(', '));
         }
       }
+      // Phần hiển thị cho BAEI
       else if (currentIndex === 'baei') {
         if (bandNames.indexOf('baei') !== -1) {
           Map.addLayer(image.select('baei').clip(aoi), 
@@ -1068,10 +1067,30 @@ function displayImage(image) {
             'BAEI - ' + displayName);
           
           dataInfoLabel.setValue('BAEI: Chỉ số trích xuất khu vực xây dựng [-1,1]');
+        } else if (bandNames.indexOf('B4') !== -1 && bandNames.indexOf('B3') !== -1 && 
+                   bandNames.indexOf('B8') !== -1 && bandNames.indexOf('B2') !== -1) {
+          // Tính toán BAEI trực tiếp khi hiển thị
+          var red_plus_green = image.select('B4').add(image.select('B3'));
+          var nir_plus_blue = image.select('B8').add(image.select('B2'));
+          var baei_numerator = red_plus_green.subtract(nir_plus_blue);
+          var baei_denominator = red_plus_green.add(nir_plus_blue);
+          var baei = baei_numerator.divide(baei_denominator).rename('baei');
+          
+          Map.addLayer(baei.clip(aoi), 
+            {min: -0.3, max: 0.3, palette: ['green', 'white', 'orange']}, 
+            'BAEI - ' + displayName);
+          
+          dataInfoLabel.setValue('BAEI: Chỉ số trích xuất khu vực xây dựng [-1,1] (tính toán trực tiếp)');
         } else {
-          showError('Ảnh thiếu chỉ số BAEI, vui lòng xử lý ảnh lại');
+          var missingBands = [];
+          if (bandNames.indexOf('B4') === -1) missingBands.push('B4');
+          if (bandNames.indexOf('B3') === -1) missingBands.push('B3');
+          if (bandNames.indexOf('B8') === -1) missingBands.push('B8');
+          if (bandNames.indexOf('B2') === -1) missingBands.push('B2');
+          showError('Ảnh thiếu band cần thiết cho tính toán BAEI: ' + missingBands.join(', '));
         }
       }
+      // Phần hiển thị cho EBBI
       else if (currentIndex === 'ebbi') {
         if (bandNames.indexOf('ebbi') !== -1) {
           Map.addLayer(image.select('ebbi').clip(aoi), 
@@ -1079,8 +1098,24 @@ function displayImage(image) {
             'EBBI - ' + displayName);
           
           dataInfoLabel.setValue('EBBI: Chỉ số xây dựng và đất trống nâng cao [-1,1]');
+        } else if (bandNames.indexOf('B11') !== -1 && bandNames.indexOf('B8') !== -1 && bandNames.indexOf('B12') !== -1) {
+          // Tính toán EBBI trực tiếp khi hiển thị
+          var swir1_minus_nir = image.select('B11').subtract(image.select('B8'));
+          var swir1_plus_swir2 = image.select('B11').add(image.select('B12'));
+          var sqrt_term = swir1_plus_swir2.add(ee.Image.constant(0.0001)).sqrt();
+          var ebbi = swir1_minus_nir.divide(sqrt_term.multiply(10)).rename('ebbi');
+          
+          Map.addLayer(ebbi.clip(aoi), 
+            {min: -0.2, max: 0.5, palette: ['green', 'yellow', 'red']}, 
+            'EBBI - ' + displayName);
+          
+          dataInfoLabel.setValue('EBBI: Chỉ số xây dựng và đất trống nâng cao [-1,1] (tính toán trực tiếp)');
         } else {
-          showError('Ảnh thiếu chỉ số EBBI, vui lòng xử lý ảnh lại');
+          var missingBands = [];
+          if (bandNames.indexOf('B11') === -1) missingBands.push('B11');
+          if (bandNames.indexOf('B8') === -1) missingBands.push('B8');
+          if (bandNames.indexOf('B12') === -1) missingBands.push('B12');
+          showError('Ảnh thiếu band cần thiết cho tính toán EBBI: ' + missingBands.join(', '));
         }
       }
       
@@ -1503,51 +1538,51 @@ function displayTimeSeriesChart(timeSeriesResults, indices) {
       }
     });
     
-    // Nếu có dữ liệu, tạo biểu đồ so sánh
-    if (allValues.length > 0) {
-      var comparisonChart = ui.Chart.array.values({
-        array: allValues,
-        axis: 0,
-        xLabels: categories
-      }).setChartType('LineChart')
-        .setOptions({
-          title: 'So sánh các chỉ số',
-          colors: colors,
-          lineWidth: 2,
-          pointSize: 3,
-          hAxis: {
-            title: 'Thời gian',
-            slantedText: true,
-            slantedTextAngle: 45
-          },
-          vAxis: {
-            title: 'Giá trị',
-            viewWindow: {
-              min: -1,
-              max: 1
-            }
-          },
-          legend: {position: 'right'}
-        });
+    // // Nếu có dữ liệu, tạo biểu đồ so sánh
+    // if (allValues.length > 0) {
+    //   var comparisonChart = ui.Chart.array.values({
+    //     array: allValues,
+    //     axis: 0,
+    //     xLabels: categories
+    //   }).setChartType('LineChart')
+    //     .setOptions({
+    //       title: 'So sánh các chỉ số',
+    //       colors: colors,
+    //       lineWidth: 2,
+    //       pointSize: 3,
+    //       hAxis: {
+    //         title: 'Thời gian',
+    //         slantedText: true,
+    //         slantedTextAngle: 45
+    //       },
+    //       vAxis: {
+    //         title: 'Giá trị',
+    //         viewWindow: {
+    //           min: -1,
+    //           max: 1
+    //         }
+    //       },
+    //       legend: {position: 'right'}
+    //     });
       
       // Thêm biểu đồ so sánh vào container
-      chartContainer.add(ui.Label('So sánh các chỉ số theo thời gian', 
-        {fontWeight: 'bold', margin: '10px 0'}));
-      chartContainer.add(comparisonChart);
-    }
+      // chartContainer.add(ui.Label('So sánh các chỉ số theo thời gian', 
+      //   {fontWeight: 'bold', margin: '10px 0'}));
+      // chartContainer.add(comparisonChart);
+    // }
   }
   
   // Hiển thị biểu đồ mặc định (NDBI)
   updateChartDisplay('ndbi');
   
-  // Thêm nút để phân tích xu hướng đô thị hóa
-  var analyzeUrbanTrendButton = ui.Button({
-    label: 'Phân tích xu hướng đô thị hóa',
-    onClick: function() {
-      analyzeUrbanTrend(timeSeriesResults);
-    }
-  });
-  chartPanel.add(analyzeUrbanTrendButton);
+  // // Thêm nút để phân tích xu hướng đô thị hóa
+  // var analyzeUrbanTrendButton = ui.Button({
+  //   label: 'Phân tích xu hướng đô thị hóa',
+  //   onClick: function() {
+  //     analyzeUrbanTrend(timeSeriesResults);
+  //   }
+  // });
+  // chartPanel.add(analyzeUrbanTrendButton);
   
   // Thêm nút đóng biểu đồ
   var closeButton = ui.Button({
@@ -1622,7 +1657,268 @@ function createTimeSeriesDataTable(timeSeriesResults, indices, point) {
 
 //==========================================================================================//
 
-// === PHÂN TÍCH LANDTRENDR CHO CHUỖI THỜI GIAN ===
+
+function applyLandTrendrLikeAlgorithm(timeSeriesData, selectedIndex) {
+  // Hàm chuẩn hóa dữ liệu
+  function normalizeData(data) {
+    const medianFilter = (arr, window) => {
+      const result = [];
+      for (let i = 0; i < arr.length; i++) {
+        const start = Math.max(0, i - Math.floor(window / 2));
+        const end = Math.min(arr.length - 1, i + Math.floor(window / 2));
+        const median = arr.slice(start, end + 1).sort((a, b) => a - b)[Math.floor((end - start + 1) / 2)];
+        result.push(median);
+      }
+      return result;
+    };
+
+    const zScoreThreshold = 2.5;
+    const filteredData = medianFilter(data.map(d => d.values[selectedIndex]), 3);
+    const zScores = filteredData.map((d, i) => (d - data[i].values[selectedIndex]) / Math.sqrt(data[i].values[selectedIndex]));
+    const normalizedData = data.map((d, i) => ({
+      ...d,
+      values: {
+        ...d.values,
+        [selectedIndex]: zScores[i] > zScoreThreshold ? filteredData[i] : d.values[selectedIndex]
+      }
+    }));
+    return normalizedData;
+  }
+
+  // Hàm xác định các điểm đỉnh tiềm năng
+  function findPotentialVertices(data) {
+    const max_segments = 8;
+    const vertexCountOvershoot = 0.2;
+    const segments = [];
+    const errors = [];
+
+    for (let i = 0; i < data.length - 1; i++) {
+      segments.push([data[i], data[i + 1]]);
+      const predicts = data.slice(i, i + 2).map(d => d.values[selectedIndex]);
+      const actuals = data.slice(i, i + 2).map(d => d.values[selectedIndex]);
+      const mse = actuals.reduce((acc, val, j) => acc + Math.pow(val - predicts[j], 2), 0) / actuals.length;
+      errors.push(mse);
+    }
+
+    const vertices = [data[0], data[data.length - 1]];
+    while (vertices.length < max_segments * (1 + vertexCountOvershoot)) {
+      const maxErrorIndex = errors.indexOf(Math.max(...errors));
+      vertices.push(data[maxErrorIndex + 1]);
+      vertices.sort((a, b) => a.time_start - b.time_start);
+      errors.splice(maxErrorIndex, 1);
+    }
+
+    return vertices;
+  }
+
+  // Hàm lọc các điểm đỉnh dựa trên góc thay đổi
+  function filterVerticesByAngle(data, vertices) {
+    const angleThreshold = 15; // Độ
+    const max_segments = 8;
+
+    while (vertices.length > max_segments) {
+      const angles = [];
+      for (let i = 1; i < vertices.length - 1; i++) {
+        const p1 = vertices[i - 1];
+        const p2 = vertices[i];
+        const p3 = vertices[i + 1];
+        const m1 = (p2.values[selectedIndex] - p1.values[selectedIndex]) / (p2.time_start - p1.time_start);
+        const m2 = (p3.values[selectedIndex] - p2.values[selectedIndex]) / (p3.time_start - p2.time_start);
+        const angle = Math.atan(Math.abs(m2 - m1) / (1 + m1 * m2)) * 180 / Math.PI;
+        angles.push(angle);
+      }
+
+      const minAngleIndex = angles.indexOf(Math.min(...angles));
+      if (angles[minAngleIndex] < angleThreshold) {
+        vertices.splice(minAngleIndex + 1, 1);
+      } else {
+        break;
+      }
+    }
+
+    return vertices;
+  }
+
+  // Hàm xác định mô hình tốt nhất với số đoạn tối đa
+  function findBestModelWithMaxSegments(data, vertices) {
+    const pvalThreshold = 0.05;
+
+    const anchoredRegression = (data, vertices) => {
+      const segments = [];
+      for (let i = 0; i < vertices.length - 1; i++) {
+        const start = vertices[i].time_start;
+        const end = vertices[i + 1].time_start;
+        const segmentData = data.filter(d => d.time_start >= start && d.time_start <= end);
+        const x = segmentData.map(d => d.time_start);
+        const y = segmentData.map(d => d.values[selectedIndex]);
+        const n = x.length;
+        const sx = x.reduce((acc, val) => acc + val, 0);
+        const sy = y.reduce((acc, val) => acc + val, 0);
+        const sxs = x.reduce((acc, val) => acc + val * val, 0);
+        const sxy = x.reduce((acc, val, i) => acc + val * y[i], 0);
+        const slope = (n * sxy - sx * sy) / (n * sxs - sx * sx);
+        const intercept = (sy - slope * sx) / n;
+        segments.push({ slope, intercept, start, end });
+      }
+      return segments;
+    };
+
+    const evaluateModel = (data, model) => {
+      const predicts = [];
+      for (let i = 0; i < data.length; i++) {
+        const segment = model.find(s => data[i].time_start >= s.start && data[i].time_start <= s.end);
+        const predict = segment.slope * data[i].time_start + segment.intercept;
+        predicts.push(predict);
+      }
+      const residuals = data.map((d, i) => d.values[selectedIndex] - predicts[i]);
+      const sse = residuals.reduce((acc, val) => acc + val * val, 0);
+      const mse = sse / (data.length - model.length * 2);
+      return { mse, sse, residuals };
+    };
+
+    const testSegmentSignificance = (data, segment) => {
+      const segmentData = data.filter(d => d.time_start >= segment.start && d.time_start <= segment.end);
+      const x = segmentData.map(d => d.time_start);
+      const y = segmentData.map(d => d.values[selectedIndex]);
+      const n = x.length;
+      const sx = x.reduce((acc, val) => acc + val, 0);
+      const sy = y.reduce((acc, val) => acc + val, 0);
+      const sxs = x.reduce((acc, val) => acc + val * val, 0);
+      const sxy = x.reduce((acc, val, i) => acc + val * y[i], 0);
+      const sse = y.reduce((acc, val, i) => acc + Math.pow(val - (segment.slope * x[i] + segment.intercept), 2), 0);
+      const mse = sse / (n - 2);
+      const sst = y.reduce((acc, val) => acc + Math.pow(val - sy / n, 2), 0);
+      const r2 = 1 - sse / sst;
+      const f = (r2 / (1 - r2)) * (n - 2);
+      const pval = 1 - jStat.centralF.cdf(f, 1, n - 2);
+      return pval;
+    };
+
+    let bestModel = anchoredRegression(data, vertices);
+    let evaluation = evaluateModel(data, bestModel);
+
+    while (true) {
+      let improved = false;
+      for (let i = 1; i < bestModel.length; i++) {
+        const left = bestModel[i - 1];
+        const right = bestModel[i];
+        const pval = testSegmentSignificance(data, right);
+        if (pval > pvalThreshold) {
+          const tempModel = [...bestModel.slice(0, i - 1), { ...left, end: right.end }, ...bestModel.slice(i + 1)];
+          const tempEvaluation = evaluateModel(data, tempModel);
+          if (tempEvaluation.mse <= evaluation.mse) {
+            bestModel = tempModel;
+            evaluation = tempEvaluation;
+            improved = true;
+            break;
+          }
+        }
+      }
+      if (!improved) {
+        break;
+      }
+    }
+
+    return { model: bestModel, evaluation };
+  }
+
+  // Hàm tạo các mô hình đơn giản hơn dần
+  function createSimplifiedModels(data, maxModel) {
+    const models = [maxModel];
+    let currentModel = maxModel;
+
+    while (currentModel.model.length > 2) {
+      const mses = [];
+      for (let i = 1; i < currentModel.model.length - 1; i++) {
+        const tempModel = {
+          model: [...currentModel.model.slice(0, i), ...currentModel.model.slice(i + 1)],
+          evaluation: evaluateModel(data, [...currentModel.model.slice(0, i), ...currentModel.model.slice(i + 1)])
+        };
+        mses.push(tempModel.evaluation.mse);
+      }
+      const minMseIndex = mses.indexOf(Math.min(...mses));
+      currentModel = {
+        model: [...currentModel.model.slice(0, minMseIndex + 1), ...currentModel.model.slice(minMseIndex + 2)],
+        evaluation: evaluateModel(data, [...currentModel.model.slice(0, minMseIndex + 1), ...currentModel.model.slice(minMseIndex + 2)])
+      };
+      models.push(currentModel);
+    }
+
+    return models;
+  }
+
+  // Hàm chọn mô hình tốt nhất
+  function selectBestModel(data, models) {
+    const n = data.length;
+    const bic = models.map(m => n * Math.log(m.evaluation.mse) + m.model.length * Math.log(n));
+    const bicMin = Math.min(...bic);
+    const bestModelIndex = bic.indexOf(bicMin);
+    const bestModel = models[bestModelIndex];
+
+    const f = (models[0].evaluation.sse - bestModel.evaluation.sse) / (bestModel.model.length - models[0].model.length) / (bestModel.evaluation.mse / (n - bestModel.model.length));
+    const pval = 1 - jStat.centralF.cdf(f, bestModel.model.length - models[0].model.length, n - bestModel.model.length);
+
+    const logMseImprovement = Math.log10(models[0].evaluation.mse / bestModel.evaluation.mse);
+    const logPval = Math.log10(pval);
+    const poff = logMseImprovement - logPval;
+
+    const recoverThreshold = Math.min(...models.map(m => m.evaluation.mse)) / 5;
+    const recoveredModel = models.find(m => m.evaluation.mse <= recoverThreshold);
+
+    return recoveredModel || bestModel;
+  }
+
+  // Áp dụng giải thuật
+  const normalizedData = normalizeData(timeSeriesData);
+  const potentialVertices = findPotentialVertices(normalizedData);
+  const filteredVertices = filterVerticesByAngle(normalizedData, potentialVertices);
+  const maxModel = findBestModelWithMaxSegments(normalizedData, filteredVertices);
+  const simplifiedModels = createSimplifiedModels(normalizedData, maxModel);
+  const bestModel = selectBestModel(normalizedData, simplifiedModels);
+
+  return bestModel;
+}
+
+function analyzeLandTrendrLike(timeSeriesResults, selectedIndex) {
+  // Gọi hàm applyLandTrendrLikeAlgorithm với dữ liệu chuỗi thời gian và chỉ số đã chọn
+  const bestModel = applyLandTrendrLikeAlgorithm(timeSeriesResults, selectedIndex);
+  
+  // Trực quan hóa kết quả bằng cách vẽ đồ thị với các đoạn thẳng từ mô hình tốt nhất
+  visualizeLandTrendrResults(timeSeriesResults, bestModel);
+}
+
+function visualizeLandTrendrResults(data, model) {
+  const chartData = data.map(d => ({
+    x: new Date(d.time_start),
+    y: d.values[currentIndex]
+  }));
+  
+  const segmentData = model.model.map(segment => {
+    return [{
+      x: new Date(segment.start),
+      y: segment.intercept
+    }, {
+      x: new Date(segment.end), 
+      y: segment.slope * (segment.end - segment.start) + segment.intercept
+    }];
+  });
+  
+  const landTrendrChart = ui.Chart.array.values(chartData, 0, [currentIndex])
+    .setChartType('ScatterChart')
+    .setOptions({
+      title: 'LandTrendr-like Segmentation',
+      hAxis: {title: 'Time'},
+      vAxis: {title: currentIndex.toUpperCase()},
+      trendlines: { 0: { type: 'linear', color: 'purple', opacity: 0.3 } }
+    });
+    
+  segmentData.forEach((segment, i) => {
+    landTrendrChart.setValue(i, segment);
+  });
+  
+  chartPanel.widgets().set(1, landTrendrChart);
+}
+
 
 
 
@@ -1653,6 +1949,6 @@ function showSuccess(message) {
 showInfo('Hãy chọn khu vực nghiên cứu và khoảng thời gian để bắt đầu.');
 
 // Thiết lập bản đồ ban đầu
-var center = ee.Geometry.Point([105.854444, 21.028511]); // Tọa độ Hà Nội
+var center = ee.Geometry.Point([105.854444, 21.028511]);
 Map.centerObject(center, 13);
 Map.setOptions('SATELLITE');

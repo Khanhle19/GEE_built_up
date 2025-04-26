@@ -1174,6 +1174,7 @@ mainPanel.add(ui.Label('5. Phân tích chuỗi thời gian pixel', {margin: '10p
 mainPanel.add(pixelAnalysisButton);
 
 var globalTimeSeriesResults = null;
+var globalIndexSelectForChart = null;
 
 // Hàm phân tích chuỗi thời gian pixel
 function analyzePixelTimeSeries(lon, lat) {
@@ -1419,6 +1420,8 @@ function displayTimeSeriesChart(timeSeriesResults, indices) {
     });
   });
   
+  globalTimeSeriesResults = timeSeriesResults;
+  
   // Dropdown để chọn chỉ số hiển thị
   var indexSelectForChart = ui.Select({
     items: [
@@ -1438,6 +1441,8 @@ function displayTimeSeriesChart(timeSeriesResults, indices) {
     },
     style: {width: '95%'}
   });
+  
+  globalIndexSelectForChart = indexSelectForChart;
   
   chartPanel.add(ui.Label('Chọn chỉ số để hiển thị:'));
   chartPanel.add(indexSelectForChart);
@@ -2335,7 +2340,7 @@ function analyzeLandTrendrLike(timeSeriesResults, selectedIndex) {
     showSuccess('Phân tích LandTrendr hoàn tất.');
   } catch (e) {
     showError('Lỗi khi thực hiện phân tích LandTrendr: ' + e.message);
-    console.error(e);
+    console.log('Error:', e);
   }
 }
 
@@ -2478,8 +2483,9 @@ var analyzeLandTrendrButton = ui.Button({
   label: 'Phân tích LandTrendr',
   onClick: function() {
     if (globalTimeSeriesResults && globalTimeSeriesResults.length > 0) {
-      // Sử dụng chỉ số được chọn từ dropdown
-      var selectedIdx = indexSelectForChart.getValue();
+      // Sử dụng chỉ số được chọn từ dropdown toàn cục
+      var selectedIdx = globalIndexSelectForChart ? globalIndexSelectForChart.getValue() : 'ndbi';
+      
       if (selectedIdx === 'all' || selectedIdx === 'all_urban') {
         selectedIdx = 'ndbi'; // Mặc định dùng NDBI nếu đang chọn "tất cả"
       }
@@ -2491,7 +2497,6 @@ var analyzeLandTrendrButton = ui.Button({
   },
   style: {margin: '5px 0'}
 });
-
 // Thêm hàm này vào hàm displayTimeSeriesChart sau dòng 1575
 // chartPanel.add(analyzeLandTrendrButton);
 

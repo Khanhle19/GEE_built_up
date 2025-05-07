@@ -1173,6 +1173,8 @@ var pixelAnalysisButton = ui.Button({
 mainPanel.add(ui.Label('5. Phân tích chuỗi thời gian pixel', {margin: '10px 0 5px 0'}));
 mainPanel.add(pixelAnalysisButton);
 
+
+var globalChartContainer = null; 
 var globalTimeSeriesResults = null;
 var globalIndexSelectForChart = null;
 
@@ -1371,7 +1373,9 @@ function analyzePixelTimeSeries(lon, lat) {
 
 // Hàm hiển thị biểu đồ chuỗi thời gian
 function displayTimeSeriesChart(timeSeriesResults, indices) {
-  // Xóa nội dung cũ
+
+  globalTimeSeriesResults = timeSeriesResults;
+
   chartPanel.clear();
   
   // Tiêu đề
@@ -1386,6 +1390,10 @@ function displayTimeSeriesChart(timeSeriesResults, indices) {
   timeSeriesResults.sort(function(a, b) {
     return a.time_start - b.time_start;
   });
+  
+  var chartContainer = ui.Panel();
+  globalChartContainer = chartContainer; // Lưu tham chiếu
+  chartPanel.add(chartContainer);
   
   // Tạo dữ liệu cho biểu đồ - bao gồm các chỉ số mới
   var chartData = {
@@ -1627,6 +1635,7 @@ function createTimeSeriesDataTable(timeSeriesResults, indices, point) {
 
 //==========================================================================================//
 
+var minChangeThreshold = 0.05;
 
 // Thư viện jStat triển khai nhẹ để tính toán phân phối F
 var jStat = {
@@ -1688,6 +1697,8 @@ function logGamma(x) {
   return temp + Math.log(ser * Math.sqrt(2 * Math.PI));
 }
 
+
+
 // Hàm chung để đánh giá mô hình (được các hàm khác sử dụng)
 function evaluateModel(data, model, selectedIndex) {
   var predicts = [];
@@ -1727,779 +1738,224 @@ function evaluateModel(data, model, selectedIndex) {
   return { mse: mse, sse: sse, residuals: residuals };
 }
 
-// Hàm chính để áp dụng thuật toán LandTrendr-like
-function applyLandTrendrLikeAlgorithm(timeSeriesData, selectedIndex) {
-  // Kiểm tra trường hợp đặc biệt
-  if (!timeSeriesData || timeSeriesData.length < 4) {
-    throw new Error('Cần ít nhất 4 điểm dữ liệu để phân tích LandTrendr');
-  }
-  
-  // Kiểm tra nếu tất cả các điểm có cùng giá trị
-  var firstValue = timeSeriesData[0].values[selectedIndex];
-  var allSameValue = true;
-  
-  for (var i = 0; i < timeSeriesData.length; i++) {
-    if (Math.abs(timeSeriesData[i].values[selectedIndex] - firstValue) > 1e-6) {
-      allSameValue = false;
-      break;
-    }
-  }
-  
-  if (allSameValue) {
-    // Trả về mô hình đơn giản nhất - đường thẳng nằm ngang
-    var start = timeSeriesData[0].time_start;
-    var end = timeSeriesData[timeSeriesData.length-1].time_start;
-    
-    var simpleModel = [{
-      slope: 0,
-      intercept: firstValue,
-      start: start,
-      end: end
-    }];
-    
-    var evaluation = evaluateModel(timeSeriesData, simpleModel, selectedIndex);
-    
-    return {
-      model: simpleModel,
-      evaluation: evaluation
-    };
-  }
-  
-  // Bước 1: Chuẩn hóa dữ liệu (loại bỏ nhiễu)
-  var normalizedData = normalizeData(timeSeriesData, selectedIndex);
-  
-  // Bước 2: Xác định các điểm đỉnh tiềm năng
-  var potentialVertices = findPotentialVertices(normalizedData, selectedIndex);
-  
-  // Bước 3: Lọc các điểm đỉnh dựa trên góc thay đổi
-  var filteredVertices = filterVerticesByAngle(normalizedData, potentialVertices, selectedIndex);
-  
-  // Bước 4: Xác định mô hình tốt nhất với số đoạn tối đa
-  var maxModel = findBestModelWithMaxSegments(normalizedData, filteredVertices, selectedIndex);
-  
-  // Bước 5: Tạo các mô hình đơn giản hơn dần
-  var simplifiedModels = createSimplifiedModels(normalizedData, maxModel, selectedIndex);
-  
-  // Bước 6: Chọn mô hình tốt nhất
-  var bestModel = selectBestModel(normalizedData, simplifiedModels, selectedIndex);
-  
-  return bestModel;
+// Hàm chuẩn hóa dữ liệu
+function normalizeSeries(series, selectedIndex) {
+  var values = series.map(function(d) { return d.values[selectedIndex]; });
+  var minVal = Math.min.apply(null, values);
+  var maxVal = Math.max.apply(null, values);
+  var range = maxVal - minVal || 1;
+  return series.map(function(d) {
+    var norm = (d.values[selectedIndex] - minVal) / range;
+    return { time_start: d.time_start, value: norm };
+  });
 }
 
-// Hàm chuẩn hóa dữ liệu (loại bỏ nhiễu)
-function normalizeData(data, selectedIndex) {
-  // Hàm lọc trung vị
-  function medianFilter(arr, window) {
-    var result = [];
-    for (var i = 0; i < arr.length; i++) {
-      var start = Math.max(0, i - Math.floor(window / 2));
-      var end = Math.min(arr.length - 1, i + Math.floor(window / 2));
-      
-      // Tạo cửa sổ và sắp xếp
-      var windowValues = [];
-      for (var j = start; j <= end; j++) {
-        windowValues.push(arr[j]);
-      }
-      
-      windowValues.sort(function(a, b) { return a - b; });
-      var median = windowValues[Math.floor(windowValues.length / 2)];
-      result.push(median);
-    }
-    return result;
-  }
+// Hàm tìm đỉnh tiềm năng có xét ngưỡng tối thiểu
+function findVertices(normalized, rawData, selectedIndex) {
+  var vertices = [0];
+  for (var i = 1; i < normalized.length - 1; i++) {
+    var prev = normalized[i-1].value;
+    var curr = normalized[i].value;
+    var next = normalized[i+1].value;
+    var delta1 = Math.abs(curr - prev);
+    var delta2 = Math.abs(curr - next);
 
-  // Tạo mảng giá trị để lọc
-  var values = [];
-  for (var i = 0; i < data.length; i++) {
-    values.push(data[i].values[selectedIndex]);
-  }
-  
-  // Áp dụng bộ lọc trung vị
-  var filteredValues = medianFilter(values, 3);
-  
-  // Tính toán Z-score và loại bỏ nhiễu
-  var zScoreThreshold = 2.5;
-  var normalizedData = [];
-  
-  for (var i = 0; i < data.length; i++) {
-    // Tính Z-score đơn giản
-    var zScore = 0;
-    
-    // Tránh chia cho 0 hoặc giá trị âm
-    if (data[i].values[selectedIndex] > 0) {
-      zScore = (data[i].values[selectedIndex] - filteredValues[i]) / 
-               Math.sqrt(Math.abs(data[i].values[selectedIndex]));
-    }
-    
-    // Tạo bản sao của đối tượng dữ liệu
-    var newDataItem = {
-      period_id: data[i].period_id,
-      display_name: data[i].display_name,
-      time_start: data[i].time_start,
-      interpolated: data[i].interpolated,
-      values: {}
-    };
-    
-    // Sao chép tất cả các giá trị chỉ số
-    for (var prop in data[i].values) {
-      if (data[i].values.hasOwnProperty(prop)) {
-        newDataItem.values[prop] = data[i].values[prop];
-      }
-    }
-    
-    // Áp dụng bộ lọc nếu phát hiện nhiễu
-    if (zScore > zScoreThreshold) {
-      newDataItem.values[selectedIndex] = filteredValues[i];
-    }
-    
-    normalizedData.push(newDataItem);
-  }
-  
-  return normalizedData;
-}
+    var rawPrev = rawData[i-1].values[selectedIndex];
+    var rawCurr = rawData[i].values[selectedIndex];
+    var rawNext = rawData[i+1].values[selectedIndex];
 
-// Hàm xác định các điểm đỉnh tiềm năng
-function findPotentialVertices(data, selectedIndex) {
-  var max_segments = Math.min(8, Math.floor(data.length / 2));
-  var vertexCountOvershoot = 0.2;
-  var segments = [];
-  var errors = [];
+    var rawChange1 = Math.abs(rawCurr - rawPrev);
+    var rawChange2 = Math.abs(rawCurr - rawNext);
 
-  // Tính toán lỗi cho từng cặp điểm liên tiếp
-  for (var i = 0; i < data.length - 1; i++) {
-    segments.push([data[i], data[i + 1]]);
-    
-    // Giá trị thực tế
-    var actuals = [
-      data[i].values[selectedIndex],
-      data[i+1].values[selectedIndex]
-    ];
-    
-    // Dự đoán tuyến tính đơn giản giữa 2 điểm
-    var predicts = actuals; // Với 2 điểm, dự đoán = giá trị thực tế
-    
-    // Tính MSE
-    var mse = 0;
-    for (var j = 0; j < actuals.length; j++) {
-      mse += Math.pow(actuals[j] - predicts[j], 2);
+    if (((curr > prev && curr > next) || (curr < prev && curr < next)) &&
+        (rawChange1 > minChangeThreshold || rawChange2 > minChangeThreshold)) {
+      vertices.push(i);
     }
-    mse /= actuals.length;
-    
-    errors.push(mse);
   }
-
-  // Bắt đầu với điểm đầu và cuối
-  var vertices = [data[0], data[data.length - 1]];
-  
-  // Thêm dần các điểm có lỗi lớn nhất
-  var maxVertices = Math.ceil(max_segments * (1 + vertexCountOvershoot));
-  
-  while (vertices.length < maxVertices && errors.length > 0) {
-    // Tìm vị trí có lỗi lớn nhất
-    var maxErrorIndex = 0;
-    var maxError = errors[0];
-    
-    for (var i = 1; i < errors.length; i++) {
-      if (errors[i] > maxError) {
-        maxError = errors[i];
-        maxErrorIndex = i;
-      }
-    }
-    
-    // Thêm điểm vào danh sách đỉnh
-    vertices.push(data[maxErrorIndex + 1]);
-    
-    // Sắp xếp lại các đỉnh theo thời gian
-    vertices.sort(function(a, b) {
-      return a.time_start - b.time_start;
-    });
-    
-    // Loại bỏ lỗi đã xử lý
-    errors.splice(maxErrorIndex, 1);
-  }
-
+  vertices.push(normalized.length - 1);
   return vertices;
 }
 
-// Hàm lọc các điểm đỉnh dựa trên góc thay đổi
-function filterVerticesByAngle(data, vertices, selectedIndex) {
-  var angleThreshold = 15; // Độ
-  var max_segments = Math.min(8, Math.floor(data.length / 2));
-  
-  // Tạo bản sao của mảng vertices để không thay đổi mảng gốc
-  var filteredVertices = vertices.slice();
-
-  while (filteredVertices.length > max_segments) {
-    var angles = [];
-    
-    // Tính góc tại mỗi đỉnh (trừ điểm đầu và cuối)
-    for (var i = 1; i < filteredVertices.length - 1; i++) {
-      var p1 = filteredVertices[i - 1];
-      var p2 = filteredVertices[i];
-      var p3 = filteredVertices[i + 1];
-      
-      // Tính độ dốc của hai đoạn
-      var m1 = (p2.values[selectedIndex] - p1.values[selectedIndex]) / 
-               (p2.time_start - p1.time_start);
-      var m2 = (p3.values[selectedIndex] - p2.values[selectedIndex]) / 
-               (p3.time_start - p2.time_start);
-      
-      // Tính góc giữa hai đoạn thẳng (đơn vị độ)
-      var tanTheta = Math.abs(m2 - m1) / (1 + m1 * m2);
-      // Tránh tanTheta âm hoặc quá lớn
-      if (!isFinite(tanTheta) || tanTheta < 0) tanTheta = 0;
-      
-      var angle = Math.atan(tanTheta) * 180 / Math.PI;
-      angles.push(angle);
-    }
-
-    // Tìm góc nhỏ nhất
-    var minAngleIndex = 0;
-    var minAngle = angles[0];
-    
-    for (var i = 1; i < angles.length; i++) {
-      if (angles[i] < minAngle) {
-        minAngle = angles[i];
-        minAngleIndex = i;
-      }
-    }
-
-    // Nếu góc nhỏ nhất dưới ngưỡng, loại bỏ đỉnh tương ứng
-    if (minAngle < angleThreshold) {
-      filteredVertices.splice(minAngleIndex + 1, 1);
-    } else {
-      // Nếu tất cả các góc đều lớn hơn ngưỡng, dừng vòng lặp
-      break;
+// Hàm tính lỗi SSE cho mô hình
+function computeSSE(series, breakpoints, selectedIndex) {
+  var sse = 0;
+  for (var i = 0; i < breakpoints.length - 1; i++) {
+    var startIdx = breakpoints[i];
+    var endIdx = breakpoints[i+1];
+    var start = series[startIdx];
+    var end = series[endIdx];
+    var slope = (end.values[selectedIndex] - start.values[selectedIndex]) / (end.time_start - start.time_start);
+    var intercept = start.values[selectedIndex] - slope * start.time_start;
+    for (var j = startIdx; j <= endIdx; j++) {
+      var predict = slope * series[j].time_start + intercept;
+      var residual = series[j].values[selectedIndex] - predict;
+      sse += residual * residual;
     }
   }
-
-  return filteredVertices;
+  return sse;
 }
 
-// Hàm xác định mô hình tốt nhất với số đoạn tối đa
-function findBestModelWithMaxSegments(data, vertices, selectedIndex) {
-  var pvalThreshold = 0.05;
-
-  // Tính hồi quy tuyến tính neo
-  function anchoredRegression(data, vertices) {
-    var segments = [];
-    
-    for (var i = 0; i < vertices.length - 1; i++) {
-      var start = vertices[i].time_start;
-      var end = vertices[i + 1].time_start;
-      
-      // Lọc dữ liệu cho đoạn này
-      var segmentData = [];
-      for (var j = 0; j < data.length; j++) {
-        if (data[j].time_start >= start && data[j].time_start <= end) {
-          segmentData.push(data[j]);
-        }
-      }
-      
-      // Tính hệ số hồi quy
-      var x = [], y = [];
-      for (var j = 0; j < segmentData.length; j++) {
-        x.push(segmentData[j].time_start);
-        y.push(segmentData[j].values[selectedIndex]);
-      }
-      
-      var n = x.length;
-      if (n < 2) {
-        // Nếu chỉ có 1 điểm, độ dốc = 0
-        segments.push({
-          slope: 0,
-          intercept: y[0],
-          start: start,
-          end: end
-        });
-        continue;
-      }
-      
-      // Tính tổng
-      var sx = 0, sy = 0, sxs = 0, sxy = 0;
-      for (var j = 0; j < n; j++) {
-        sx += x[j];
-        sy += y[j];
-        sxs += x[j] * x[j];
-        sxy += x[j] * y[j];
-      }
-      
-      // Tính hệ số hồi quy
-      var slope, intercept;
-      var denominator = n * sxs - sx * sx;
-      
-      if (Math.abs(denominator) < 1e-10) {
-        // Tránh chia cho 0
-        slope = 0;
-        intercept = sy / n;
-      } else {
-        slope = (n * sxy - sx * sy) / denominator;
-        intercept = (sy - slope * sx) / n;
-      }
-      
-      segments.push({
-        slope: slope,
-        intercept: intercept,
-        start: start,
-        end: end
-      });
-    }
-    
-    return segments;
+// Hàm chính LandTrendr-like (sửa để nhận thêm rawData)
+function applyLandTrendrLikeAlgorithm(timeSeriesData, selectedIndex) {
+  if (timeSeriesData.length < 4) {
+    throw new Error('Cần ít nhất 4 điểm để phân tích LandTrendr');
   }
 
-  // Kiểm tra ý nghĩa thống kê của đoạn
-  function testSegmentSignificance(data, segment) {
-    // Lọc dữ liệu cho đoạn này
-    var segmentData = [];
-    for (var j = 0; j < data.length; j++) {
-      if (data[j].time_start >= segment.start && data[j].time_start <= segment.end) {
-        segmentData.push(data[j]);
-      }
+  var normalized = normalizeSeries(timeSeriesData, selectedIndex);
+  var vertices = findVertices(normalized, timeSeriesData, selectedIndex);
+
+  if (vertices.length <= 2) {
+    return {
+      model: [{
+        slope: 0,
+        intercept: timeSeriesData[0].values[selectedIndex],
+        start: timeSeriesData[0].time_start,
+        end: timeSeriesData[timeSeriesData.length-1].time_start
+      }],
+      evaluation: { mse: 0, sse: 0 }
+    };
+  }
+
+  var bestModel = null;
+  var bestSSE = Infinity;
+  var bestBreaks = null;
+  var maxSegments = Math.min(vertices.length - 1, 5);
+
+  for (var k = 1; k <= maxSegments; k++) {
+    var breaks = [0];
+    var step = Math.floor((vertices.length - 1) / k);
+    for (var i = 1; i <= k; i++) {
+      breaks.push(vertices[i * step]);
     }
-    
-    // Nếu không đủ dữ liệu, đoạn không có ý nghĩa
-    if (segmentData.length < 3) {
-      return 1.0; // p-value = 1 nghĩa là không có ý nghĩa thống kê
-    }
-    
-    // Tính hệ số xác định R^2
-    var x = [], y = [];
-    for (var i = 0; i < segmentData.length; i++) {
-      x.push(segmentData[i].time_start);
-      y.push(segmentData[i].values[selectedIndex]);
-    }
-    
-    var n = x.length;
-    var sx = 0, sy = 0, sxs = 0, sxy = 0;
-    
-    for (var i = 0; i < n; i++) {
-      sx += x[i];
-      sy += y[i];
-      sxs += x[i] * x[i];
-      sxy += x[i] * y[i];
-    }
-    
-    var meanY = sy / n;
-    var sse = 0, sst = 0;
-    
-    for (var i = 0; i < n; i++) {
-      var predicted = segment.slope * x[i] + segment.intercept;
-      sse += Math.pow(y[i] - predicted, 2);
-      sst += Math.pow(y[i] - meanY, 2);
-    }
-    
-    // Tránh chia cho 0
-    if (sst < 1e-10) {
-      return 1.0;
-    }
-    
-    var r2 = 1 - sse / sst;
-    
-    // Tránh r2 âm
-    if (r2 < 0) r2 = 0;
-    if (r2 > 1) r2 = 1;
-    
-    // Tính F-statistic
-    var f;
-    if (Math.abs(1 - r2) < 1e-10) {
-      f = 1000; // F lớn tương ứng với p-value nhỏ
-    } else {
-      f = (r2 / (1 - r2)) * (n - 2);
-    }
-    
-    // Xấp xỉ p-value đơn giản (vì đã có jStat)
-    try {
-      var pval = 1 - jStat.centralF.cdf(f, 1, n - 2);
-      return pval;
-    } catch (e) {
-      // Fallback nếu có lỗi
-      return f > 4 ? 0.05 : 0.5; // Ngưỡng đơn giản
+
+    var sse = computeSSE(timeSeriesData, breaks, selectedIndex);
+    if (sse < bestSSE) {
+      bestSSE = sse;
+      bestBreaks = breaks;
     }
   }
 
-  // Khởi tạo mô hình tốt nhất
-  var bestModel = anchoredRegression(data, vertices);
-  var evaluation = evaluateModel(data, bestModel, selectedIndex);
-  
-  // Lặp qua các đoạn và cải thiện mô hình
-  var improved = true;
-  var maxIterations = 20; // Tránh vòng lặp vô hạn
-  var iteration = 0;
-  
-  while (improved && iteration < maxIterations) {
-    improved = false;
-    iteration++;
-    
-    for (var i = 1; i < bestModel.length; i++) {
-      var left = bestModel[i - 1];
-      var right = bestModel[i];
-      
-      var pval = testSegmentSignificance(data, right);
-      
-      if (pval > pvalThreshold) {
-        // Tạo đoạn mới kết hợp hai đoạn
-        var newSegment = {
-          slope: left.slope, // Đơn giản là dùng độ dốc của đoạn trái
-          intercept: left.intercept,
-          start: left.start,
-          end: right.end
-        };
-        
-        // Tạo mô hình tạm thời
-        var tempModel = bestModel.slice(0, i - 1).concat([newSegment]).concat(bestModel.slice(i + 1));
-        var tempEvaluation = evaluateModel(data, tempModel, selectedIndex);
-        
-        // Nếu MSE không tăng quá nhiều, chấp nhận mô hình mới
-        if (tempEvaluation.mse <= evaluation.mse * 1.05) {
-          bestModel = tempModel;
-          evaluation = tempEvaluation;
-          improved = true;
-          break;
-        }
-      }
-    }
+  var model = [];
+  for (var i = 0; i < bestBreaks.length - 1; i++) {
+    var start = timeSeriesData[bestBreaks[i]];
+    var end = timeSeriesData[bestBreaks[i+1]];
+    var slope = (end.values[selectedIndex] - start.values[selectedIndex]) / (end.time_start - start.time_start);
+    var intercept = start.values[selectedIndex] - slope * start.time_start;
+    model.push({ slope: slope, intercept: intercept, start: start.time_start, end: end.time_start });
   }
-  
+
+  var mse = bestSSE / (timeSeriesData.length - model.length * 2);
+
   return {
-    model: bestModel,
-    evaluation: evaluation
+    model: model,
+    evaluation: { mse: mse, sse: bestSSE }
   };
 }
 
-// Hàm tạo các mô hình đơn giản hơn dần
-function createSimplifiedModels(data, maxModel, selectedIndex) {
-  var models = [maxModel];
-  var currentModel = maxModel;
-  
-  // Lặp cho đến khi chỉ còn 1 đoạn
-  while (currentModel.model.length > 1) {
-    var mses = [];
-    var tempModels = [];
-    
-    // Thử loại bỏ từng điểm đỉnh (trừ điểm đầu và cuối)
-    for (var i = 0; i < currentModel.model.length - 1; i++) {
-      var left = currentModel.model[i];
-      var right = currentModel.model[i + 1];
-      
-      // Tạo đoạn mới
-      var newSegment = {
-        start: left.start,
-        end: right.end
-      };
-      
-      // Tính toán hệ số hồi quy mới cho đoạn kết hợp
-      var segmentData = [];
-      for (var j = 0; j < data.length; j++) {
-        if (data[j].time_start >= newSegment.start && data[j].time_start <= newSegment.end) {
-          segmentData.push(data[j]);
-        }
-      }
-      
-      var x = [], y = [];
-      for (var j = 0; j < segmentData.length; j++) {
-        x.push(segmentData[j].time_start);
-        y.push(segmentData[j].values[selectedIndex]);
-      }
-      
-      var n = x.length;
-      var sx = 0, sy = 0, sxs = 0, sxy = 0;
-      
-      for (var j = 0; j < n; j++) {
-        sx += x[j];
-        sy += y[j];
-        sxs += x[j] * x[j];
-        sxy += x[j] * y[j];
-      }
-      
-      var slope, intercept;
-      var denominator = n * sxs - sx * sx;
-      
-      if (Math.abs(denominator) < 1e-10) {
-        slope = 0;
-        intercept = sy / n;
-      } else {
-        slope = (n * sxy - sx * sy) / denominator;
-        intercept = (sy - slope * sx) / n;
-      }
-      
-      newSegment.slope = slope;
-      newSegment.intercept = intercept;
-      
-      // Tạo mô hình mới
-      var tempModel = currentModel.model.slice(0, i).concat([newSegment]).concat(currentModel.model.slice(i + 2));
-      var tempEvaluation = evaluateModel(data, tempModel, selectedIndex);
-      
-      mses.push(tempEvaluation.mse);
-      tempModels.push({
-        model: tempModel,
-        evaluation: tempEvaluation,
-        index: i
-      });
-    }
-    
-    // Tìm mô hình có MSE nhỏ nhất
-    var minMseIndex = 0;
-    var minMse = mses[0];
-    
-    for (var i = 1; i < mses.length; i++) {
-      if (mses[i] < minMse) {
-        minMse = mses[i];
-        minMseIndex = i;
-      }
-    }
-    
-    // Cập nhật mô hình hiện tại
-    currentModel = tempModels[minMseIndex];
-    models.push(currentModel);
-  }
-  
-  return models;
-}
 
-// Hàm chọn mô hình tốt nhất
-function selectBestModel(data, models, selectedIndex) {
-  var n = data.length;
-  var bic = [];
-  
-  // Tính BIC cho mỗi mô hình
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var modelBIC = n * Math.log(m.evaluation.mse) + m.model.length * Math.log(n);
-    bic.push(modelBIC);
-  }
-  
-  // Tìm mô hình có BIC nhỏ nhất
-  var bicMin = bic[0];
-  var bestModelIndex = 0;
-  
-  for (var i = 1; i < bic.length; i++) {
-    if (bic[i] < bicMin) {
-      bicMin = bic[i];
-      bestModelIndex = i;
-    }
-  }
-  
-  var bestModel = models[bestModelIndex];
-  
-  // Tính toán thêm giá trị p-off (không bắt buộc)
-  try {
-    var f = (models[0].evaluation.sse - bestModel.evaluation.sse) / 
-            (bestModel.model.length - models[0].model.length) / 
-            (bestModel.evaluation.mse / (n - bestModel.model.length));
-    
-    var pval = 1;
-    try {
-      pval = 1 - jStat.centralF.cdf(f, bestModel.model.length - models[0].model.length, n - bestModel.model.length);
-    } catch (e) {
-      pval = 0.5;
-    }
-    
-    var logMseImprovement = Math.log10(models[0].evaluation.mse / bestModel.evaluation.mse);
-    var logPval = Math.log10(pval > 0 ? pval : 0.00001);
-    var poff = logMseImprovement - logPval;
-    
-    bestModel.poff = poff;
-  } catch (e) {
-    // Bỏ qua nếu có lỗi, không ảnh hưởng kết quả
-  }
-  
-  return bestModel;
-}
-
-// Hàm phân tích và hiển thị kết quả LandTrendr
+// Hàm phân tích và vẽ LandTrendr
 function analyzeLandTrendrLike(timeSeriesResults, selectedIndex) {
-  // Kiểm tra dữ liệu hợp lệ
-  if (!timeSeriesResults || timeSeriesResults.length < 4) {
-    showError('Cần ít nhất 4 điểm dữ liệu để phân tích LandTrendr');
-    return;
-  }
-  
-  // Kiểm tra các giá trị có tồn tại không
-  var hasInvalidData = false;
-  for (var i = 0; i < timeSeriesResults.length; i++) {
-    var value = timeSeriesResults[i].values[selectedIndex];
-    if (value === undefined || value === null || isNaN(value)) {
-      hasInvalidData = true;
-      break;
-    }
-  }
-  
-  if (hasInvalidData) {
-    showError('Dữ liệu có giá trị không hợp lệ cho chỉ số ' + selectedIndex);
-    return;
-  }
-  
   try {
-    // Thực hiện phân tích
-    showInfo('Đang phân tích dữ liệu bằng thuật toán LandTrendr...');
-    var bestModel = applyLandTrendrLikeAlgorithm(timeSeriesResults, selectedIndex);
+    if (!timeSeriesResults || timeSeriesResults.length < 4) {
+      showError('Cần ít nhất 4 điểm dữ liệu để phân tích LandTrendr');
+      return;
+    }
     
-    // Vẽ kết quả
+    showInfo('Đang phân tích dữ liệu bằng LandTrendr...');
+    var bestModel = applyLandTrendrLikeAlgorithm(timeSeriesResults, selectedIndex);
     visualizeLandTrendrResults(timeSeriesResults, bestModel, selectedIndex);
     showSuccess('Phân tích LandTrendr hoàn tất.');
   } catch (e) {
-    showError('Lỗi khi thực hiện phân tích LandTrendr: ' + e.message);
-    console.log('Error:', e);
+    showError('Lỗi LandTrendr: ' + e.message);
   }
 }
 
-// Hàm vẽ kết quả LandTrendr
 function visualizeLandTrendrResults(data, model, selectedIndex) {
-  // Xóa nội dung container hiện tại
-  chartContainer.clear();
-  
-  // Tạo mảng dữ liệu cho biểu đồ gốc
-  var originalValues = [];
-  var dates = [];
-  var dateStrings = [];
-  
-  for (var i = 0; i < data.length; i++) {
-    originalValues.push(data[i].values[selectedIndex]);
-    var date = new Date(data[i].time_start);
-    dates.push(date);
-    dateStrings.push(date.toISOString().split('T')[0]);
+  if (!globalChartContainer) {
+    showError('Không tìm thấy panel hiển thị biểu đồ');
+    return;
   }
-  
-  // Tạo dữ liệu cho segment (các đoạn thẳng từ mô hình)
-  var segmentValues = [];
-  var segmentDates = [];
-  var segmentDateStrings = [];
-  
-  // Thu thập tất cả điểm đoạn để vẽ đồ thị
-  for (var i = 0; i < model.model.length; i++) {
-    var segment = model.model[i];
-    var startDate = new Date(segment.start);
-    var endDate = new Date(segment.end);
-    
-    segmentDates.push(startDate);
-    segmentDates.push(endDate);
-    
-    segmentDateStrings.push(startDate.toISOString().split('T')[0]);
-    segmentDateStrings.push(endDate.toISOString().split('T')[0]);
-    
-    var startValue = segment.intercept;
-    var endValue = segment.slope * (segment.end - segment.start) + segment.intercept;
-    
-    segmentValues.push(startValue);
-    segmentValues.push(endValue);
-  }
-  
-  // Vẽ biểu đồ điểm dữ liệu gốc
-  var minVal = Math.min.apply(null, originalValues);
-  var maxVal = Math.max.apply(null, originalValues);
-  
-  // Thêm biên độ để nhìn rõ hơn
-  var margin = (maxVal - minVal) * 0.1;
-  var yMin = minVal - margin;
-  var yMax = maxVal + margin;
-  
-  var originalDataChart = ui.Chart.array.values({
-    array: originalValues,
+
+  globalChartContainer.clear();
+
+  // 1. Vẽ scatter points (dữ liệu gốc)
+  var scatterPoints = data.map(function(d) {
+    return [new Date(d.time_start), d.values[selectedIndex]];
+  });
+
+  var scatterChart = ui.Chart.array.values({
+    array: scatterPoints.map(function(p) { return [p[1]]; }),
     axis: 0,
-    xLabels: dateStrings
+    xLabels: scatterPoints.map(function(p) { return p[0].toISOString().split('T')[0]; })
   }).setChartType('ScatterChart')
     .setOptions({
-      title: 'Phân đoạn LandTrendr cho ' + selectedIndex.toUpperCase(),
-      colors: ['blue'],
+      title: 'Phân tích LandTrendr cho ' + selectedIndex.toUpperCase(),
       pointSize: 5,
-      hAxis: {
-        title: 'Thời gian',
-        slantedText: true,
-        slantedTextAngle: 45
-      },
-      vAxis: {
-        title: 'Giá trị ' + selectedIndex.toUpperCase(),
-        viewWindow: {
-          min: yMin,
-          max: yMax
-        }
-      },
-      legend: {position: 'none'}
+      colors: ['black'],
+      hAxis: { title: 'Thời gian', slantedText: true, slantedTextAngle: 45 },
+      vAxis: { title: 'Giá trị ' + selectedIndex.toUpperCase() },
+      legend: { position: 'none' }
     });
-  
-  chartContainer.add(originalDataChart);
-  
-  // Tạo biểu đồ thể hiện các đoạn thẳng
-  if (segmentValues.length > 0) {
-    var segmentChart = ui.Chart.array.values({
-      array: segmentValues,
-      axis: 0,
-      xLabels: segmentDateStrings
-    }).setChartType('LineChart')
-      .setOptions({
-        title: 'Mô hình phân đoạn LandTrendr',
-        colors: ['red'],
-        lineWidth: 2,
-        pointSize: 0,
-        hAxis: {
-          title: 'Thời gian',
-          slantedText: true,
-          slantedTextAngle: 45
-        },
-        vAxis: {
-          title: 'Giá trị ' + selectedIndex.toUpperCase(),
-          viewWindow: {
-            min: yMin,
-            max: yMax
-          }
-        },
-        legend: {position: 'none'}
-      });
-    
-    chartContainer.add(segmentChart);
-  }
-  
-  // Thêm thông tin về mô hình
-  var segmentInfoPanel = ui.Panel({
-    layout: ui.Panel.Layout.flow('vertical'),
-    style: {margin: '10px 0'}
+
+  globalChartContainer.add(scatterChart);
+
+  // 2. Tạo chuỗi điểm liên tục cho segment line
+  var continuousSegmentPoints = [];
+  model.model.forEach(function(seg, idx) {
+    var startVal = seg.slope * seg.start + seg.intercept;
+    var endVal = seg.slope * seg.end + seg.intercept;
+
+    if (idx === 0) {
+      continuousSegmentPoints.push([new Date(seg.start), startVal]);
+    }
+    continuousSegmentPoints.push([new Date(seg.end), endVal]);
   });
-  
-  segmentInfoPanel.add(ui.Label('Thông tin mô hình LandTrendr:', {fontWeight: 'bold'}));
-  segmentInfoPanel.add(ui.Label('Số đoạn: ' + model.model.length));
-  
-  if (model.evaluation && model.evaluation.mse !== undefined) {
-    var mseText = 'MSE: ' + model.evaluation.mse.toFixed(6);
-    segmentInfoPanel.add(ui.Label(mseText));
-  }
-  
-  // Hiển thị thông tin từng đoạn
-  for (var i = 0; i < model.model.length; i++) {
-    var segment = model.model[i];
-    var startDate = new Date(segment.start).toISOString().split('T')[0];
-    var endDate = new Date(segment.end).toISOString().split('T')[0];
-    
-    var segmentText = 'Đoạn ' + (i+1) + ': ' + startDate + ' đến ' + endDate + 
-                      ', Độ dốc: ' + segment.slope.toFixed(6);
-    segmentInfoPanel.add(ui.Label(segmentText));
-  }
-  
-  chartContainer.add(segmentInfoPanel);
+
+  // 3. Vẽ LineChart liên tục
+  var segmentLineChart = ui.Chart.array.values({
+    array: continuousSegmentPoints.map(function(p) { return [p[1]]; }),
+    axis: 0,
+    xLabels: continuousSegmentPoints.map(function(p) { return p[0].toISOString().split('T')[0]; })
+  }).setChartType('LineChart')
+    .setOptions({
+      lineWidth: 4,
+      colors: ['red'],
+      pointSize: 0,
+      hAxis: { slantedText: true, slantedTextAngle: 45 },
+      vAxis: { title: '' },
+      legend: { position: 'none' }
+    });
+
+  globalChartContainer.add(segmentLineChart);
+
+  // 4. Panel thông tin về model
+  var infoPanel = ui.Panel();
+  infoPanel.add(ui.Label('Số đoạn: ' + model.model.length));
+  infoPanel.add(ui.Label('MSE: ' + model.evaluation.mse.toFixed(6)));
+  model.model.forEach(function(seg, idx) {
+    var start = new Date(seg.start).toISOString().split('T')[0];
+    var end = new Date(seg.end).toISOString().split('T')[0];
+    infoPanel.add(ui.Label('Đoạn ' + (idx+1) + ': ' + start + ' - ' + end + ', Độ dốc: ' + seg.slope.toFixed(6)));
+  });
+  globalChartContainer.add(infoPanel);
 }
 
-// Thêm nút để phân tích xu hướng đô thị hóa (thêm vào cuối hàm displayTimeSeriesChart)
+
+
+// Nút kích hoạt LandTrendr
 var analyzeLandTrendrButton = ui.Button({
   label: 'Phân tích LandTrendr',
   onClick: function() {
     if (globalTimeSeriesResults && globalTimeSeriesResults.length > 0) {
-      // Sử dụng chỉ số được chọn từ dropdown toàn cục
       var selectedIdx = globalIndexSelectForChart ? globalIndexSelectForChart.getValue() : 'ndbi';
-      
-      if (selectedIdx === 'all' || selectedIdx === 'all_urban') {
-        selectedIdx = 'ndbi'; // Mặc định dùng NDBI nếu đang chọn "tất cả"
-      }
-      
+      if (selectedIdx === 'all' || selectedIdx === 'all_urban') selectedIdx = 'ndbi';
       analyzeLandTrendrLike(globalTimeSeriesResults, selectedIdx);
     } else {
-      showError('Không có dữ liệu để phân tích. Vui lòng chọn một điểm trên bản đồ trước.');
+      showError('Không có dữ liệu để phân tích. Vui lòng chọn điểm.');
     }
   },
   style: {margin: '5px 0'}
 });
-// Thêm hàm này vào hàm displayTimeSeriesChart sau dòng 1575
-// chartPanel.add(analyzeLandTrendrButton);
-
 
 
 

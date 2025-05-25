@@ -1366,238 +1366,6 @@ function analyzePixelTimeSeries(lon, lat) {
   }
 }
 
-// Hàm hiển thị biểu đồ chuỗi thời gian
-function displayTimeSeriesChart(timeSeriesResults, indices) {
-  // Xóa nội dung cũ
-  chartPanel.clear();
-  
-  // Tiêu đề
-  chartPanel.add(ui.Label('Chuỗi thời gian chỉ số phổ', 
-    {fontWeight: 'bold', fontSize: '16px', margin: '0 0 10px 0'}));
-  
-  // Thêm thông tin về vùng đệm
-  chartPanel.add(ui.Label('Kích thước vùng phân tích: 30x30m', 
-    {fontSize: '13px', margin: '0 0 15px 0'}));
-    
-  // Sắp xếp dữ liệu theo thời gian
-  timeSeriesResults.sort(function(a, b) {
-    return a.time_start - b.time_start;
-  });
-  
-  // Tạo dữ liệu cho biểu đồ - bao gồm các chỉ số mới
-  var chartData = {
-    ndvi: [],
-    ndwi: [],
-    ndbi: [],
-    bui: [],
-    ui: [],
-    baei: [],
-    ebbi: []
-  };
-  
-  var categories = []; // Danh sách kỳ
-  
-  // Xử lý dữ liệu cho biểu đồ
-  timeSeriesResults.forEach(function(result) {
-    // Thêm tên kỳ
-    var periodId = result.period_id;
-    var isInterp = result.interpolated;
-    categories.push(periodId + (isInterp ? ' (NỘI SUY)' : ''));
-    
-    // Thêm dữ liệu mỗi chỉ số
-    indices.forEach(function(index) {
-      if (result.values[index] !== null && 
-          result.values[index] !== undefined) {
-        chartData[index].push({
-          x: new Date(result.time_start),
-          y: result.values[index],
-          interpolated: isInterp
-        });
-      }
-    });
-  });
-  
-  // Dropdown để chọn chỉ số hiển thị
-  var indexSelectForChart = ui.Select({
-    items: [
-      {label: 'NDVI - Chỉ số thực vật', value: 'ndvi'},
-      {label: 'NDWI - Chỉ số nước', value: 'ndwi'},
-      {label: 'NDBI - Chỉ số đô thị', value: 'ndbi'},
-      {label: 'BUI - Chỉ số xây dựng kết hợp', value: 'bui'},
-      {label: 'UI - Chỉ số đô thị', value: 'ui'},
-      {label: 'BAEI - Chỉ số trích xuất khu vực xây dựng', value: 'baei'},
-      {label: 'EBBI - Chỉ số xây dựng và đất trống nâng cao', value: 'ebbi'},
-      {label: 'Tất cả các chỉ số xây dựng', value: 'all_urban'},
-      {label: 'Tất cả các chỉ số', value: 'all'}
-    ],
-    value: 'ndbi',
-    onChange: function(selected) {
-      updateChartDisplay(selected);
-    },
-    style: {width: '95%'}
-  });
-  
-  chartPanel.add(ui.Label('Chọn chỉ số để hiển thị:'));
-  chartPanel.add(indexSelectForChart);
-  
-  // Panel để chứa biểu đồ
-  var chartContainer = ui.Panel();
-  chartPanel.add(chartContainer);
-  
-  // Hàm cập nhật hiển thị biểu đồ dựa trên lựa chọn
-  function updateChartDisplay(selectedValue) {
-    chartContainer.clear();
-    
-    var indicesToShow = [];
-    
-    if (selectedValue === 'all') {
-      indicesToShow = indices;
-    } else if (selectedValue === 'all_urban') {
-      indicesToShow = ['ndbi', 'bui', 'ui', 'baei', 'ebbi'];
-    } else {
-      indicesToShow = [selectedValue];
-    }
-    
-    // Hiển thị các chỉ số được chọn
-    indicesToShow.forEach(function(index) {
-      if (chartData[index].length > 0) {
-        var color = index === 'ndvi' ? 'green' : 
-                  (index === 'ndwi' ? 'blue' : 
-                  (index === 'ndbi' ? 'brown' : 
-                  (index === 'bui' ? 'red' : 
-                  (index === 'ui' ? 'purple' : 
-                  (index === 'baei' ? 'orange' : 'darkred')))));
-                  
-        var title = index === 'ndvi' ? 'Chỉ số thực vật (NDVI)' : 
-                 (index === 'ndwi' ? 'Chỉ số nước (NDWI)' : 
-                 (index === 'ndbi' ? 'Chỉ số đô thị (NDBI)' : 
-                 (index === 'bui' ? 'Chỉ số xây dựng kết hợp (BUI)' : 
-                 (index === 'ui' ? 'Chỉ số đô thị (UI)' : 
-                 (index === 'baei' ? 'Chỉ số trích xuất khu vực xây dựng (BAEI)' : 
-                 'Chỉ số xây dựng và đất trống nâng cao (EBBI)')))));
-        
-        // Chuẩn bị dữ liệu dạng mảng
-        var dataValues = chartData[index].map(function(item) { return item.y; });
-        
-        // Tạo biểu đồ
-        var chart = ui.Chart.array.values({
-          array: dataValues,
-          axis: 0,
-          xLabels: categories
-        }).setChartType('LineChart')
-          .setOptions({
-            title: title,
-            colors: [color],
-            lineWidth: 2,
-            pointSize: 4,
-            legend: {position: 'none'},
-            hAxis: {
-              title: 'Thời gian',
-              slantedText: true,
-              slantedTextAngle: 45
-            },
-            vAxis: {
-              title: 'Giá trị',
-              viewWindow: {
-                min: -1,
-                max: 1
-              }
-            }
-          });
-        
-        // Thêm biểu đồ vào panel
-        chartContainer.add(chart);
-      }
-    });
-    
-    // Nếu hiển thị đồng thời nhiều chỉ số, thêm biểu đồ so sánh
-    if (indicesToShow.length > 1) {
-      createComparisonChart(chartData, categories, indicesToShow);
-    }
-  }
-  
-  // Hàm tạo biểu đồ so sánh giữa các chỉ số
-  function createComparisonChart(chartData, categories, indicesToShow) {
-    // Chuẩn bị dữ liệu cho biểu đồ so sánh
-    var allValues = [];
-    var colors = [];
-    var labels = [];
-    
-    indicesToShow.forEach(function(index) {
-      if (chartData[index].length > 0) {
-        var values = chartData[index].map(function(item) { return item.y; });
-        allValues.push(values);
-        
-        var color = index === 'ndvi' ? 'green' : 
-                  (index === 'ndwi' ? 'blue' : 
-                  (index === 'ndbi' ? 'brown' : 
-                  (index === 'bui' ? 'red' : 
-                  (index === 'ui' ? 'purple' : 
-                  (index === 'baei' ? 'orange' : 'darkred')))));
-        colors.push(color);
-        
-        var label = index.toUpperCase();
-        labels.push(label);
-      }
-    });
-    
-    // // Nếu có dữ liệu, tạo biểu đồ so sánh
-    // if (allValues.length > 0) {
-    //   var comparisonChart = ui.Chart.array.values({
-    //     array: allValues,
-    //     axis: 0,
-    //     xLabels: categories
-    //   }).setChartType('LineChart')
-    //     .setOptions({
-    //       title: 'So sánh các chỉ số',
-    //       colors: colors,
-    //       lineWidth: 2,
-    //       pointSize: 3,
-    //       hAxis: {
-    //         title: 'Thời gian',
-    //         slantedText: true,
-    //         slantedTextAngle: 45
-    //       },
-    //       vAxis: {
-    //         title: 'Giá trị',
-    //         viewWindow: {
-    //           min: -1,
-    //           max: 1
-    //         }
-    //       },
-    //       legend: {position: 'right'}
-    //     });
-      
-      // Thêm biểu đồ so sánh vào container
-      // chartContainer.add(ui.Label('So sánh các chỉ số theo thời gian', 
-      //   {fontWeight: 'bold', margin: '10px 0'}));
-      // chartContainer.add(comparisonChart);
-    // }
-  }
-  
-  // Hiển thị biểu đồ mặc định (NDBI)
-  updateChartDisplay('ndbi');
-  
-  // // Thêm nút để phân tích xu hướng đô thị hóa
-  // var analyzeUrbanTrendButton = ui.Button({
-  //   label: 'Phân tích xu hướng đô thị hóa',
-  //   onClick: function() {
-  //     analyzeUrbanTrend(timeSeriesResults);
-  //   }
-  // });
-  // chartPanel.add(analyzeUrbanTrendButton);
-  
-  // Thêm nút đóng biểu đồ
-  var closeButton = ui.Button({
-    label: 'Đóng biểu đồ',
-    onClick: function() {
-      chartPanel.style().set('shown', false);
-    },
-    style: {margin: '10px 0 0 0'}
-  });
-  chartPanel.add(closeButton);
-}
-
 // Hàm tạo bảng dữ liệu để xuất
 function createTimeSeriesDataTable(timeSeriesResults, indices, point) {
   // Tạo một panel riêng cho bảng
@@ -1660,7 +1428,236 @@ function createTimeSeriesDataTable(timeSeriesResults, indices, point) {
 
 
 //==========================================================================================//
-
+// Hàm hiển thị biểu đồ chuỗi thời gian với trục thời gian chuẩn hóa
+function displayTimeSeriesChart(timeSeriesResults, indices) {
+  // Xóa nội dung cũ
+  chartPanel.clear();
+  
+  // Tiêu đề
+  chartPanel.add(ui.Label('Chuỗi thời gian chỉ số phổ', 
+    {fontWeight: 'bold', fontSize: '16px', margin: '0 0 10px 0'}));
+  
+  // Thêm thông tin về vùng đệm
+  chartPanel.add(ui.Label('Kích thước vùng phân tích: 30x30m', 
+    {fontSize: '13px', margin: '0 0 15px 0'}));
+    
+  // Sắp xếp dữ liệu theo thời gian
+  timeSeriesResults.sort(function(a, b) {
+    return a.time_start - b.time_start;
+  });
+  
+  // Tạo dữ liệu cho biểu đồ - bao gồm các chỉ số mới
+  var chartData = {
+    ndvi: [],
+    ndwi: [],
+    ndbi: [],
+    bui: [],
+    ui: [],
+    baei: [],
+    ebbi: []
+  };
+  
+  var categories = []; // Danh sách kỳ
+  var normalizedTimeLabels = []; // Nhãn thời gian đã chuẩn hóa
+  
+  for (var i = 0; i < timeSeriesResults.length; i++) {
+    var normalizedTimeStep = i * 0.1;
+    normalizedTimeLabels.push(normalizedTimeStep.toFixed(1));
+    
+    var result = timeSeriesResults[i];
+    var periodId = result.period_id;
+    var isInterp = result.interpolated;
+    categories.push(periodId + (isInterp ? ' (NỘI SUY)' : ''));
+    
+    // Thêm dữ liệu mỗi chỉ số với x là thời gian chuẩn hóa
+    indices.forEach(function(index) {
+      if (result.values[index] !== null && 
+          result.values[index] !== undefined) {
+        chartData[index].push({
+          x: normalizedTimeStep, // Điểm thời gian chuẩn hóa tăng đều 0.1
+          y: result.values[index],
+          originalDate: new Date(result.time_start),
+          periodId: periodId,
+          interpolated: isInterp
+        });
+      }
+    });
+  }
+  
+  // Dropdown để chọn chỉ số hiển thị
+  var indexSelectForChart = ui.Select({
+    items: [
+      {label: 'NDVI - Chỉ số thực vật', value: 'ndvi'},
+      {label: 'NDWI - Chỉ số nước', value: 'ndwi'},
+      {label: 'NDBI - Chỉ số đô thị', value: 'ndbi'},
+      {label: 'BUI - Chỉ số xây dựng kết hợp', value: 'bui'},
+      {label: 'UI - Chỉ số đô thị', value: 'ui'},
+      {label: 'BAEI - Chỉ số trích xuất khu vực xây dựng', value: 'baei'},
+      {label: 'EBBI - Chỉ số xây dựng và đất trống nâng cao', value: 'ebbi'},
+      {label: 'Tất cả các chỉ số xây dựng', value: 'all_urban'},
+      {label: 'Tất cả các chỉ số', value: 'all'}
+    ],
+    value: 'ndbi',
+    onChange: function(selected) {
+      updateChartDisplay(selected);
+    },
+    style: {width: '95%'}
+  });
+  
+  chartPanel.add(ui.Label('Chọn chỉ số để hiển thị:'));
+  chartPanel.add(indexSelectForChart);
+  
+  // Panel để chứa biểu đồ
+  var chartContainer = ui.Panel();
+  chartPanel.add(chartContainer);
+  
+  // Thêm chú thích về trục thời gian chuẩn hóa
+  chartPanel.add(ui.Label('Trục thời gian đã được chuẩn hóa từ 0.0 đến 1.0', 
+    {fontSize: '12px', margin: '5px 0', fontStyle: 'italic'}));
+  
+  // Hàm cập nhật hiển thị biểu đồ dựa trên lựa chọn
+  function updateChartDisplay(selectedValue) {
+    chartContainer.clear();
+    
+    var indicesToShow = [];
+    
+    if (selectedValue === 'all') {
+      indicesToShow = indices;
+    } else if (selectedValue === 'all_urban') {
+      indicesToShow = ['ndbi', 'bui', 'ui', 'baei', 'ebbi'];
+    } else {
+      indicesToShow = [selectedValue];
+    }
+    
+    // Hiển thị các chỉ số được chọn
+    indicesToShow.forEach(function(index) {
+      if (chartData[index].length > 0) {
+        var color = index === 'ndvi' ? 'green' : 
+                  (index === 'ndwi' ? 'blue' : 
+                  (index === 'ndbi' ? 'brown' : 
+                  (index === 'bui' ? 'red' : 
+                  (index === 'ui' ? 'purple' : 
+                  (index === 'baei' ? 'orange' : 'darkred')))));
+                  
+        var title = index === 'ndvi' ? 'Chỉ số thực vật (NDVI)' : 
+                 (index === 'ndwi' ? 'Chỉ số nước (NDWI)' : 
+                 (index === 'ndbi' ? 'Chỉ số đô thị (NDBI)' : 
+                 (index === 'bui' ? 'Chỉ số xây dựng kết hợp (BUI)' : 
+                 (index === 'ui' ? 'Chỉ số đô thị (UI)' : 
+                 (index === 'baei' ? 'Chỉ số trích xuất khu vực xây dựng (BAEI)' : 
+                 'Chỉ số xây dựng và đất trống nâng cao (EBBI)')))));
+        
+        // Chuẩn bị dữ liệu dạng mảng với giá trị X là thời gian chuẩn hóa
+        var dataValues = chartData[index].map(function(item) { return item.y; });
+        
+        // Tính giá trị min và max của dữ liệu cho viewWindow
+        var minValue = Math.min.apply(null, dataValues);
+        var maxValue = Math.max.apply(null, dataValues);
+        
+        // Thêm biên độ 10% để dễ nhìn
+        var padding = (maxValue - minValue) * 0.1;
+        minValue = minValue - padding;
+        maxValue = maxValue + padding;
+        
+        // Tạo biểu đồ với trục X là thời gian chuẩn hóa
+        var chart = ui.Chart.array.values({
+          array: dataValues,
+          axis: 0,
+          xLabels: normalizedTimeLabels // Sử dụng nhãn thời gian chuẩn hóa
+        }).setChartType('LineChart')
+          .setOptions({
+            title: title,
+            colors: [color],
+            lineWidth: 2,
+            pointSize: 4,
+            legend: {position: 'none'},
+            hAxis: {
+              title: 'Thời gian chuẩn hóa',
+              slantedText: true,
+              slantedTextAngle: 45
+            },
+            vAxis: {
+              title: 'Giá trị',
+              viewWindow: {
+                min: minValue,
+                max: maxValue
+              }
+            },
+            tooltip: {
+              isHtml: true, 
+              trigger: 'focus'
+            }
+          });
+        
+        // Thêm biểu đồ vào panel
+        chartContainer.add(chart);
+      }
+    });
+    
+    // Chỉ hiển thị một bảng ánh xạ thời gian chung cho tất cả các chỉ số
+    if (chartData[indicesToShow[0]].length > 0) {
+      // Thêm bảng ánh xạ giữa thời gian chuẩn hóa và thời gian thực
+      var timeMapPanel = ui.Panel({
+        layout: ui.Panel.Layout.flow('vertical'),
+        style: {margin: '10px 0', padding: '5px', border: '1px solid #ccc'}
+      });
+      
+      timeMapPanel.add(ui.Label('Bảng ánh xạ thời gian chuẩn hóa:', 
+        {fontWeight: 'bold', fontSize: '12px', margin: '0 0 5px 0'}));
+      
+      // Tạo một bảng đơn giản hiển thị mối tương quan
+      var timeMapTable = ui.Panel({
+        layout: ui.Panel.Layout.flow('vertical'),
+        style: {fontSize: '11px', margin: '0'}
+      });
+      
+      // Thêm header cho bảng
+      var headerRow = ui.Panel({
+        layout: ui.Panel.Layout.flow('horizontal'),
+        style: {margin: '2px 0', fontWeight: 'bold'}
+      });
+      
+      headerRow.add(ui.Label('T.gian chuẩn hóa', {width: '40px'}));
+      headerRow.add(ui.Label('Kỳ', {width: '120px'}));
+      headerRow.add(ui.Label('Ngày', {width: '100px'}));
+      
+      timeMapTable.add(headerRow);
+      
+      // Thêm ánh xạ từ dữ liệu (chỉ lấy từ chỉ số đầu tiên vì thời gian giống nhau cho tất cả)
+      var firstIndex = indicesToShow[0];
+      chartData[firstIndex].forEach(function(item, idx) {
+        var mapRow = ui.Panel({
+          layout: ui.Panel.Layout.flow('horizontal'),
+          style: {margin: '2px 0'}
+        });
+        
+        mapRow.add(ui.Label(item.x.toFixed(1), {width: '40px'}));
+        mapRow.add(ui.Label(item.periodId + (item.interpolated ? ' (NỘI SUY)' : ''), 
+          {width: '120px'}));
+        mapRow.add(ui.Label(item.originalDate.toISOString().split('T')[0], 
+          {width: '100px'}));
+        
+        timeMapTable.add(mapRow);
+      });
+      
+      timeMapPanel.add(timeMapTable);
+      chartContainer.add(timeMapPanel);
+    }
+  }
+  
+  // Hiển thị biểu đồ mặc định (NDBI)
+  updateChartDisplay('ndbi');
+  
+  // Thêm nút đóng biểu đồ
+  var closeButton = ui.Button({
+    label: 'Đóng biểu đồ',
+    onClick: function() {
+      chartPanel.style().set('shown', false);
+    },
+    style: {margin: '10px 0 0 0'}
+  });
+  chartPanel.add(closeButton);
+}
 
 //==========================================================================================//
 

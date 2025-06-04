@@ -2,7 +2,11 @@
  * Ứng dụng phân tích ảnh Sentinel-2 theo kỳ 2 tháng
  * Tác giả: Khanhle19
  * Phiên bản: 2.4
+<<<<<<< HEAD
  * Ngày: 2025-06-03
+=======
+ * Ngày: 2025-03-10
+>>>>>>> 6bb9113294de44b02f999fa0a9ffb7e877ab2f9b
  * Tính năng mới: Sử dụng phương pháp reduce để bảo toàn band
  */
 

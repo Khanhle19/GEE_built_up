@@ -2,7 +2,7 @@
  * Ứng dụng phân tích ảnh Sentinel-2 theo kỳ 2 tháng
  * Tác giả: Khanhle19
  * Phiên bản: 2.4
- * Ngày: 2025-04-19
+ * Ngày: 2025-06-03
  * Tính năng mới: Sử dụng phương pháp reduce để bảo toàn band
  */
 
@@ -307,7 +307,7 @@ function processImages() {
   var s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
     .filterBounds(aoi)
     .filterDate(startDate, endDate)
-    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40)); 
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40));  // Tăng ngưỡng mây lên 40%
   
   // Lưu lại collection hiện tại
   currentCollection = s2;
@@ -560,36 +560,39 @@ function interpolateNextPeriod(collection, periodsToInterpolate, index, availabl
   });
 }
 
-// Hàm tạo ảnh đại diện bằng mosaic thay vì median
+// Hàm tạo ảnh trung vị sử dụng phương pháp reduce
 function createMedianImage(collection, callback) {
-  // Lấy ảnh đầu tiên để lấy tên các band có sẵn
+  // Lấy ảnh đầu tiên để có danh sách band
   collection.first().bandNames().evaluate(function(bands) {
     if (!bands || bands.length === 0) {
       callback(null);
       return;
     }
-
+    
     try {
-      var bandsToProcess = ['B2', 'B3', 'B4', 'B8', 'B8A', 'B11', 'B12'];
-      var availableBands = bandsToProcess.filter(function(b) {
-        return bands.indexOf(b) !== -1;
+      // Tạo danh sách các band cần tính toán - Cập nhật để bao gồm đủ band cho các chỉ số
+      var bandsToProcess = ['B2', 'B3', 'B4', 'B8', 'B8A', 'B11', 'B12']; 
+      
+      // Kiểm tra xem band nào có trong danh sách bands
+      var availableBands = [];
+      bandsToProcess.forEach(function(band) {
+        if (bands.indexOf(band) !== -1) {
+          availableBands.push(band);
+        }
       });
-
+      
+      // Nếu không có band nào khả dụng
       if (availableBands.length === 0) {
         callback(null);
         return;
       }
-
-      // Sắp xếp để ảnh ít mây trước nếu có metadata
-      var sortedCollection = collection;
-      if (collection.first().propertyNames().contains('CLOUDY_PIXEL_PERCENTAGE')) {
-        sortedCollection = collection.sort('CLOUDY_PIXEL_PERCENTAGE');
-      }
-
-      var mosaicImage = sortedCollection.select(availableBands).mosaic();
-      callback(mosaicImage);
+      
+      // Xử lý toàn bộ collection để tạo median cho từng band
+      var medianImage = collection.select(availableBands).median();
+      
+      callback(medianImage);
     } catch (e) {
-      showError('Lỗi khi tạo ảnh mosaic: ' + e.message);
+      showError('Lỗi khi tạo ảnh median: ' + e.message);
       callback(null);
     }
   });
@@ -1173,11 +1176,6 @@ var pixelAnalysisButton = ui.Button({
 mainPanel.add(ui.Label('5. Phân tích chuỗi thời gian pixel', {margin: '10px 0 5px 0'}));
 mainPanel.add(pixelAnalysisButton);
 
-
-var globalChartContainer = null; 
-var globalTimeSeriesResults = null;
-var globalIndexSelectForChart = null;
-
 // Hàm phân tích chuỗi thời gian pixel
 function analyzePixelTimeSeries(lon, lat) {
   // Hiển thị thông báo đang xử lý
@@ -1230,9 +1228,6 @@ function analyzePixelTimeSeries(lon, lat) {
     function processNextImageValue(index) {
       if (index >= processedKeys.length) {
         // Đã xử lý hết tất cả các ảnh
-        
-        globalTimeSeriesResults = timeSeriesResults;
-        
         displayTimeSeriesChart(timeSeriesResults, indices);
         createTimeSeriesDataTable(timeSeriesResults, indices, point);
         
@@ -1371,208 +1366,6 @@ function analyzePixelTimeSeries(lon, lat) {
   }
 }
 
-// Hàm hiển thị biểu đồ chuỗi thời gian
-function displayTimeSeriesChart(timeSeriesResults, indices) {
-
-  globalTimeSeriesResults = timeSeriesResults;
-
-  chartPanel.clear();
-  
-  // Tiêu đề
-  chartPanel.add(ui.Label('Chuỗi thời gian chỉ số phổ', 
-    {fontWeight: 'bold', fontSize: '16px', margin: '0 0 10px 0'}));
-  
-  // Thêm thông tin về vùng đệm
-  chartPanel.add(ui.Label('Kích thước vùng phân tích: 30x30m', 
-    {fontSize: '13px', margin: '0 0 15px 0'}));
-    
-  // Sắp xếp dữ liệu theo thời gian
-  timeSeriesResults.sort(function(a, b) {
-    return a.time_start - b.time_start;
-  });
-  
-  var chartContainer = ui.Panel();
-  globalChartContainer = chartContainer; // Lưu tham chiếu
-  chartPanel.add(chartContainer);
-  
-  // Tạo dữ liệu cho biểu đồ - bao gồm các chỉ số mới
-  var chartData = {
-    ndvi: [],
-    ndwi: [],
-    ndbi: [],
-    bui: [],
-    ui: [],
-    baei: [],
-    ebbi: []
-  };
-  
-  var categories = []; // Danh sách kỳ
-  
-  // Xử lý dữ liệu cho biểu đồ
-  timeSeriesResults.forEach(function(result) {
-    // Thêm tên kỳ
-    var periodId = result.period_id;
-    var isInterp = result.interpolated;
-    categories.push(periodId + (isInterp ? ' (NỘI SUY)' : ''));
-    
-    // Thêm dữ liệu mỗi chỉ số
-    indices.forEach(function(index) {
-      if (result.values[index] !== null && 
-          result.values[index] !== undefined) {
-        chartData[index].push({
-          x: new Date(result.time_start),
-          y: result.values[index],
-          interpolated: isInterp
-        });
-      }
-    });
-  });
-  
-  globalTimeSeriesResults = timeSeriesResults;
-  
-  // Dropdown để chọn chỉ số hiển thị
-  var indexSelectForChart = ui.Select({
-    items: [
-      {label: 'NDVI - Chỉ số thực vật', value: 'ndvi'},
-      {label: 'NDWI - Chỉ số nước', value: 'ndwi'},
-      {label: 'NDBI - Chỉ số đô thị', value: 'ndbi'},
-      {label: 'BUI - Chỉ số xây dựng kết hợp', value: 'bui'},
-      {label: 'UI - Chỉ số đô thị', value: 'ui'},
-      {label: 'BAEI - Chỉ số trích xuất khu vực xây dựng', value: 'baei'},
-      {label: 'EBBI - Chỉ số xây dựng và đất trống nâng cao', value: 'ebbi'},
-      {label: 'Tất cả các chỉ số xây dựng', value: 'all_urban'},
-      {label: 'Tất cả các chỉ số', value: 'all'}
-    ],
-    value: 'ndbi',
-    onChange: function(selected) {
-      updateChartDisplay(selected);
-    },
-    style: {width: '95%'}
-  });
-  
-  globalIndexSelectForChart = indexSelectForChart;
-  
-  chartPanel.add(ui.Label('Chọn chỉ số để hiển thị:'));
-  chartPanel.add(indexSelectForChart);
-  
-  // Panel để chứa biểu đồ
-  var chartContainer = ui.Panel();
-  chartPanel.add(chartContainer);
-  
-  // Hàm cập nhật hiển thị biểu đồ dựa trên lựa chọn
-  function updateChartDisplay(selectedValue) {
-    chartContainer.clear();
-    
-    var indicesToShow = [];
-    
-    if (selectedValue === 'all') {
-      indicesToShow = indices;
-    } else if (selectedValue === 'all_urban') {
-      indicesToShow = ['ndbi', 'bui', 'ui', 'baei', 'ebbi'];
-    } else {
-      indicesToShow = [selectedValue];
-    }
-    
-    // Hiển thị các chỉ số được chọn
-    indicesToShow.forEach(function(index) {
-      if (chartData[index].length > 0) {
-        var color = index === 'ndvi' ? 'green' : 
-                  (index === 'ndwi' ? 'blue' : 
-                  (index === 'ndbi' ? 'brown' : 
-                  (index === 'bui' ? 'red' : 
-                  (index === 'ui' ? 'purple' : 
-                  (index === 'baei' ? 'orange' : 'darkred')))));
-                  
-        var title = index === 'ndvi' ? 'Chỉ số thực vật (NDVI)' : 
-                 (index === 'ndwi' ? 'Chỉ số nước (NDWI)' : 
-                 (index === 'ndbi' ? 'Chỉ số đô thị (NDBI)' : 
-                 (index === 'bui' ? 'Chỉ số xây dựng kết hợp (BUI)' : 
-                 (index === 'ui' ? 'Chỉ số đô thị (UI)' : 
-                 (index === 'baei' ? 'Chỉ số trích xuất khu vực xây dựng (BAEI)' : 
-                 'Chỉ số xây dựng và đất trống nâng cao (EBBI)')))));
-        
-        // Chuẩn bị dữ liệu dạng mảng
-        var dataValues = chartData[index].map(function(item) { return item.y; });
-        
-        // Tạo biểu đồ
-        var chart = ui.Chart.array.values({
-          array: dataValues,
-          axis: 0,
-          xLabels: categories
-        }).setChartType('LineChart')
-          .setOptions({
-            title: title,
-            colors: [color],
-            lineWidth: 2,
-            pointSize: 4,
-            legend: {position: 'none'},
-            hAxis: {
-              title: 'Thời gian',
-              slantedText: true,
-              slantedTextAngle: 45
-            },
-            vAxis: {
-              title: 'Giá trị',
-              viewWindow: {
-                min: -1,
-                max: 1
-              }
-            }
-          });
-        
-        // Thêm biểu đồ vào panel
-        chartContainer.add(chart);
-      }
-    });
-    
-    // Nếu hiển thị đồng thời nhiều chỉ số, thêm biểu đồ so sánh
-    if (indicesToShow.length > 1) {
-      createComparisonChart(chartData, categories, indicesToShow);
-    }
-  }
-  
-  // Hàm tạo biểu đồ so sánh giữa các chỉ số
-  function createComparisonChart(chartData, categories, indicesToShow) {
-    // Chuẩn bị dữ liệu cho biểu đồ so sánh
-    var allValues = [];
-    var colors = [];
-    var labels = [];
-    
-    indicesToShow.forEach(function(index) {
-      if (chartData[index].length > 0) {
-        var values = chartData[index].map(function(item) { return item.y; });
-        allValues.push(values);
-        
-        var color = index === 'ndvi' ? 'green' : 
-                  (index === 'ndwi' ? 'blue' : 
-                  (index === 'ndbi' ? 'brown' : 
-                  (index === 'bui' ? 'red' : 
-                  (index === 'ui' ? 'purple' : 
-                  (index === 'baei' ? 'orange' : 'darkred')))));
-        colors.push(color);
-        
-        var label = index.toUpperCase();
-        labels.push(label);
-      }
-    });
-  }
-  
-  // Hiển thị biểu đồ mặc định (NDBI)
-  updateChartDisplay('ndbi');
-  
-  chartPanel.add(analyzeLandTrendrButton);
-  
-  // Thêm nút đóng biểu đồ
-  var closeButton = ui.Button({
-    label: 'Đóng biểu đồ',
-    onClick: function() {
-      chartPanel.style().set('shown', false);
-    },
-    style: {margin: '10px 0 0 0'}
-  });
-  chartPanel.add(closeButton);
-}
-
 // Hàm tạo bảng dữ liệu để xuất
 function createTimeSeriesDataTable(timeSeriesResults, indices, point) {
   // Tạo một panel riêng cho bảng
@@ -1633,331 +1426,238 @@ function createTimeSeriesDataTable(timeSeriesResults, indices, point) {
   chartPanel.add(tablePanel);
 }
 
+
 //==========================================================================================//
-
-var minChangeThreshold = 0.05;
-
-// Thư viện jStat triển khai nhẹ để tính toán phân phối F
-var jStat = {
-  centralF: {
-    cdf: function(x, df1, df2) {
-      // Triển khai hàm phân phối tích lũy F (F cumulative distribution function)
-      // Phương pháp xấp xỉ cho phân phối F
-      var a = df1 / 2;
-      var b = df2 / 2;
-      return betaIncomplete(df1 * x / (df1 * x + df2), a, b);
-    }
-  }
-};
-
-// Hàm beta không đầy đủ (incomplete beta function) cần thiết cho CDF
-function betaIncomplete(x, a, b) {
-  // Xấp xỉ hàm beta không đầy đủ
-  if (x === 0 || x === 1) {
-    return x;
-  }
+// Hàm hiển thị biểu đồ chuỗi thời gian với trục thời gian chuẩn hóa
+function displayTimeSeriesChart(timeSeriesResults, indices) {
+  // Xóa nội dung cũ
+  chartPanel.clear();
   
-  // Xấp xỉ đơn giản
-  var term = Math.exp(a * Math.log(x) + b * Math.log(1 - x) - 
-              logBeta(a, b));
+  // Tiêu đề
+  chartPanel.add(ui.Label('Chuỗi thời gian chỉ số phổ', 
+    {fontWeight: 'bold', fontSize: '16px', margin: '0 0 10px 0'}));
   
-  // Công thức xấp xỉ - đơn giản hóa cho Google Earth Engine
-  return x < (a + 1) / (a + b + 2) ? 
-         term * betaSeriesApprox(x, a, b) / a : 
-         1 - term * betaSeriesApprox(1 - x, b, a) / b;
-}
-
-function betaSeriesApprox(x, a, b, maxIterations) {
-  if (!maxIterations) maxIterations = 100;
-  var sum = 0;
-  var term = 1;
-  
-  for (var i = 0; i < maxIterations; i++) {
-    term *= (a + i) * x / (a + b + i);
-    sum += term;
-    if (Math.abs(term) < 1e-10) break;
-  }
-  
-  return sum;
-}
-
-function logBeta(a, b) {
-  // Logarit của hàm Beta
-  return logGamma(a) + logGamma(b) - logGamma(a + b);
-}
-
-function logGamma(x) {
-  // Logarit của hàm Gamma - xấp xỉ Stirling
-  if (x <= 0) return Infinity;
-  
-  var temp = (x - 0.5) * Math.log(x + 4.5) - (x + 4.5);
-  var ser = 1.0 + 76.18009173 / (x + 0) - 86.50532033 / (x + 1)
-          + 24.01409822 / (x + 2) - 1.231739516 / (x + 3)
-          + 0.00120858003 / (x + 4) - 0.00000536382 / (x + 5);
-  return temp + Math.log(ser * Math.sqrt(2 * Math.PI));
-}
-
-
-
-// Hàm chung để đánh giá mô hình (được các hàm khác sử dụng)
-function evaluateModel(data, model, selectedIndex) {
-  var predicts = [];
-  for (var i = 0; i < data.length; i++) {
-    // Tìm segment phù hợp
-    var segment = null;
-    for (var j = 0; j < model.length; j++) {
-      if (data[i].time_start >= model[j].start && data[i].time_start <= model[j].end) {
-        segment = model[j];
-        break;
-      }
-    }
+  // Thêm thông tin về vùng đệm
+  chartPanel.add(ui.Label('Kích thước vùng phân tích: 30x30m', 
+    {fontSize: '13px', margin: '0 0 15px 0'}));
     
-    if (!segment) {
-      // Nếu không tìm thấy segment phù hợp, bỏ qua giá trị này
-      continue;
-    }
-    
-    var predict = segment.slope * data[i].time_start + segment.intercept;
-    predicts.push(predict);
-  }
-  
-  // Tính toán độ lệch
-  var residuals = [];
-  var sse = 0;
-  
-  for (var i = 0; i < data.length; i++) {
-    if (i >= predicts.length) break;
-    var residual = data[i].values[selectedIndex] - predicts[i];
-    residuals.push(residual);
-    sse += residual * residual;
-  }
-  
-  var mse = sse / (data.length - model.length * 2);
-  if (!isFinite(mse)) mse = sse; // Trường hợp mẫu số = 0
-  
-  return { mse: mse, sse: sse, residuals: residuals };
-}
-
-// Hàm chuẩn hóa dữ liệu
-function normalizeSeries(series, selectedIndex) {
-  var values = series.map(function(d) { return d.values[selectedIndex]; });
-  var minVal = Math.min.apply(null, values);
-  var maxVal = Math.max.apply(null, values);
-  var range = maxVal - minVal || 1;
-  return series.map(function(d) {
-    var norm = (d.values[selectedIndex] - minVal) / range;
-    return { time_start: d.time_start, value: norm };
+  // Sắp xếp dữ liệu theo thời gian
+  timeSeriesResults.sort(function(a, b) {
+    return a.time_start - b.time_start;
   });
-}
-
-// Hàm tìm đỉnh tiềm năng có xét ngưỡng tối thiểu
-function findVertices(normalized, rawData, selectedIndex) {
-  var vertices = [0];
-  for (var i = 1; i < normalized.length - 1; i++) {
-    var prev = normalized[i-1].value;
-    var curr = normalized[i].value;
-    var next = normalized[i+1].value;
-    var delta1 = Math.abs(curr - prev);
-    var delta2 = Math.abs(curr - next);
-
-    var rawPrev = rawData[i-1].values[selectedIndex];
-    var rawCurr = rawData[i].values[selectedIndex];
-    var rawNext = rawData[i+1].values[selectedIndex];
-
-    var rawChange1 = Math.abs(rawCurr - rawPrev);
-    var rawChange2 = Math.abs(rawCurr - rawNext);
-
-    if (((curr > prev && curr > next) || (curr < prev && curr < next)) &&
-        (rawChange1 > minChangeThreshold || rawChange2 > minChangeThreshold)) {
-      vertices.push(i);
-    }
-  }
-  vertices.push(normalized.length - 1);
-  return vertices;
-}
-
-// Hàm tính lỗi SSE cho mô hình
-function computeSSE(series, breakpoints, selectedIndex) {
-  var sse = 0;
-  for (var i = 0; i < breakpoints.length - 1; i++) {
-    var startIdx = breakpoints[i];
-    var endIdx = breakpoints[i+1];
-    var start = series[startIdx];
-    var end = series[endIdx];
-    var slope = (end.values[selectedIndex] - start.values[selectedIndex]) / (end.time_start - start.time_start);
-    var intercept = start.values[selectedIndex] - slope * start.time_start;
-    for (var j = startIdx; j <= endIdx; j++) {
-      var predict = slope * series[j].time_start + intercept;
-      var residual = series[j].values[selectedIndex] - predict;
-      sse += residual * residual;
-    }
-  }
-  return sse;
-}
-
-// Hàm chính LandTrendr-like (sửa để nhận thêm rawData)
-function applyLandTrendrLikeAlgorithm(timeSeriesData, selectedIndex) {
-  if (timeSeriesData.length < 4) {
-    throw new Error('Cần ít nhất 4 điểm để phân tích LandTrendr');
-  }
-
-  var normalized = normalizeSeries(timeSeriesData, selectedIndex);
-  var vertices = findVertices(normalized, timeSeriesData, selectedIndex);
-
-  if (vertices.length <= 2) {
-    return {
-      model: [{
-        slope: 0,
-        intercept: timeSeriesData[0].values[selectedIndex],
-        start: timeSeriesData[0].time_start,
-        end: timeSeriesData[timeSeriesData.length-1].time_start
-      }],
-      evaluation: { mse: 0, sse: 0 }
-    };
-  }
-
-  var bestModel = null;
-  var bestSSE = Infinity;
-  var bestBreaks = null;
-  var maxSegments = Math.min(vertices.length - 1, 5);
-
-  for (var k = 1; k <= maxSegments; k++) {
-    var breaks = [0];
-    var step = Math.floor((vertices.length - 1) / k);
-    for (var i = 1; i <= k; i++) {
-      breaks.push(vertices[i * step]);
-    }
-
-    var sse = computeSSE(timeSeriesData, breaks, selectedIndex);
-    if (sse < bestSSE) {
-      bestSSE = sse;
-      bestBreaks = breaks;
-    }
-  }
-
-  var model = [];
-  for (var i = 0; i < bestBreaks.length - 1; i++) {
-    var start = timeSeriesData[bestBreaks[i]];
-    var end = timeSeriesData[bestBreaks[i+1]];
-    var slope = (end.values[selectedIndex] - start.values[selectedIndex]) / (end.time_start - start.time_start);
-    var intercept = start.values[selectedIndex] - slope * start.time_start;
-    model.push({ slope: slope, intercept: intercept, start: start.time_start, end: end.time_start });
-  }
-
-  var mse = bestSSE / (timeSeriesData.length - model.length * 2);
-
-  return {
-    model: model,
-    evaluation: { mse: mse, sse: bestSSE }
+  
+  // Tạo dữ liệu cho biểu đồ - bao gồm các chỉ số mới
+  var chartData = {
+    ndvi: [],
+    ndwi: [],
+    ndbi: [],
+    bui: [],
+    ui: [],
+    baei: [],
+    ebbi: []
   };
-}
-
-
-// Hàm phân tích và vẽ LandTrendr
-function analyzeLandTrendrLike(timeSeriesResults, selectedIndex) {
-  try {
-    if (!timeSeriesResults || timeSeriesResults.length < 4) {
-      showError('Cần ít nhất 4 điểm dữ liệu để phân tích LandTrendr');
-      return;
+  
+  var categories = []; // Danh sách kỳ
+  var normalizedTimeLabels = []; // Nhãn thời gian đã chuẩn hóa
+  
+  for (var i = 0; i < timeSeriesResults.length; i++) {
+    var normalizedTimeStep = i * 0.1;
+    normalizedTimeLabels.push(normalizedTimeStep.toFixed(1));
+    
+    var result = timeSeriesResults[i];
+    var periodId = result.period_id;
+    var isInterp = result.interpolated;
+    categories.push(periodId + (isInterp ? ' (NỘI SUY)' : ''));
+    
+    // Thêm dữ liệu mỗi chỉ số với x là thời gian chuẩn hóa
+    indices.forEach(function(index) {
+      if (result.values[index] !== null && 
+          result.values[index] !== undefined) {
+        chartData[index].push({
+          x: normalizedTimeStep, // Điểm thời gian chuẩn hóa tăng đều 0.1
+          y: result.values[index],
+          originalDate: new Date(result.time_start),
+          periodId: periodId,
+          interpolated: isInterp
+        });
+      }
+    });
+  }
+  
+  // Dropdown để chọn chỉ số hiển thị
+  var indexSelectForChart = ui.Select({
+    items: [
+      {label: 'NDVI - Chỉ số thực vật', value: 'ndvi'},
+      {label: 'NDWI - Chỉ số nước', value: 'ndwi'},
+      {label: 'NDBI - Chỉ số đô thị', value: 'ndbi'},
+      {label: 'BUI - Chỉ số xây dựng kết hợp', value: 'bui'},
+      {label: 'UI - Chỉ số đô thị', value: 'ui'},
+      {label: 'BAEI - Chỉ số trích xuất khu vực xây dựng', value: 'baei'},
+      {label: 'EBBI - Chỉ số xây dựng và đất trống nâng cao', value: 'ebbi'},
+      {label: 'Tất cả các chỉ số xây dựng', value: 'all_urban'},
+      {label: 'Tất cả các chỉ số', value: 'all'}
+    ],
+    value: 'ndbi',
+    onChange: function(selected) {
+      updateChartDisplay(selected);
+    },
+    style: {width: '95%'}
+  });
+  
+  chartPanel.add(ui.Label('Chọn chỉ số để hiển thị:'));
+  chartPanel.add(indexSelectForChart);
+  
+  // Panel để chứa biểu đồ
+  var chartContainer = ui.Panel();
+  chartPanel.add(chartContainer);
+  
+  // Thêm chú thích về trục thời gian chuẩn hóa
+  chartPanel.add(ui.Label('Trục thời gian đã được chuẩn hóa từ 0.0 đến 1.0', 
+    {fontSize: '12px', margin: '5px 0', fontStyle: 'italic'}));
+  
+  // Hàm cập nhật hiển thị biểu đồ dựa trên lựa chọn
+  function updateChartDisplay(selectedValue) {
+    chartContainer.clear();
+    
+    var indicesToShow = [];
+    
+    if (selectedValue === 'all') {
+      indicesToShow = indices;
+    } else if (selectedValue === 'all_urban') {
+      indicesToShow = ['ndbi', 'bui', 'ui', 'baei', 'ebbi'];
+    } else {
+      indicesToShow = [selectedValue];
     }
     
-    showInfo('Đang phân tích dữ liệu bằng LandTrendr...');
-    var bestModel = applyLandTrendrLikeAlgorithm(timeSeriesResults, selectedIndex);
-    visualizeLandTrendrResults(timeSeriesResults, bestModel, selectedIndex);
-    showSuccess('Phân tích LandTrendr hoàn tất.');
-  } catch (e) {
-    showError('Lỗi LandTrendr: ' + e.message);
-  }
-}
-
-function visualizeLandTrendrResults(data, model, selectedIndex) {
-  if (!globalChartContainer) {
-    showError('Không tìm thấy panel hiển thị biểu đồ');
-    return;
-  }
-
-  globalChartContainer.clear();
-
-  // 1. Vẽ scatter points (dữ liệu gốc)
-  var scatterPoints = data.map(function(d) {
-    return [new Date(d.time_start), d.values[selectedIndex]];
-  });
-
-  var scatterChart = ui.Chart.array.values({
-    array: scatterPoints.map(function(p) { return [p[1]]; }),
-    axis: 0,
-    xLabels: scatterPoints.map(function(p) { return p[0].toISOString().split('T')[0]; })
-  }).setChartType('ScatterChart')
-    .setOptions({
-      title: 'Phân tích LandTrendr cho ' + selectedIndex.toUpperCase(),
-      pointSize: 5,
-      colors: ['black'],
-      hAxis: { title: 'Thời gian', slantedText: true, slantedTextAngle: 45 },
-      vAxis: { title: 'Giá trị ' + selectedIndex.toUpperCase() },
-      legend: { position: 'none' }
+    // Hiển thị các chỉ số được chọn
+    indicesToShow.forEach(function(index) {
+      if (chartData[index].length > 0) {
+        var color = index === 'ndvi' ? 'green' : 
+                  (index === 'ndwi' ? 'blue' : 
+                  (index === 'ndbi' ? 'brown' : 
+                  (index === 'bui' ? 'red' : 
+                  (index === 'ui' ? 'purple' : 
+                  (index === 'baei' ? 'orange' : 'darkred')))));
+                  
+        var title = index === 'ndvi' ? 'Chỉ số thực vật (NDVI)' : 
+                 (index === 'ndwi' ? 'Chỉ số nước (NDWI)' : 
+                 (index === 'ndbi' ? 'Chỉ số đô thị (NDBI)' : 
+                 (index === 'bui' ? 'Chỉ số xây dựng kết hợp (BUI)' : 
+                 (index === 'ui' ? 'Chỉ số đô thị (UI)' : 
+                 (index === 'baei' ? 'Chỉ số trích xuất khu vực xây dựng (BAEI)' : 
+                 'Chỉ số xây dựng và đất trống nâng cao (EBBI)')))));
+        
+        // Chuẩn bị dữ liệu dạng mảng với giá trị X là thời gian chuẩn hóa
+        var dataValues = chartData[index].map(function(item) { return item.y; });
+        
+        // Tính giá trị min và max của dữ liệu cho viewWindow
+        var minValue = Math.min.apply(null, dataValues);
+        var maxValue = Math.max.apply(null, dataValues);
+        
+        // Thêm biên độ 10% để dễ nhìn
+        var padding = (maxValue - minValue) * 0.1;
+        minValue = minValue - padding;
+        maxValue = maxValue + padding;
+        
+        // Tạo biểu đồ với trục X là thời gian chuẩn hóa
+        var chart = ui.Chart.array.values({
+          array: dataValues,
+          axis: 0,
+          xLabels: normalizedTimeLabels // Sử dụng nhãn thời gian chuẩn hóa
+        }).setChartType('LineChart')
+          .setOptions({
+            title: title,
+            colors: [color],
+            lineWidth: 2,
+            pointSize: 4,
+            legend: {position: 'none'},
+            hAxis: {
+              title: 'Thời gian chuẩn hóa',
+              slantedText: true,
+              slantedTextAngle: 45
+            },
+            vAxis: {
+              title: 'Giá trị',
+              viewWindow: {
+                min: minValue,
+                max: maxValue
+              }
+            },
+            tooltip: {
+              isHtml: true, 
+              trigger: 'focus'
+            }
+          });
+        
+        // Thêm biểu đồ vào panel
+        chartContainer.add(chart);
+      }
     });
-
-  globalChartContainer.add(scatterChart);
-
-  // 2. Tạo chuỗi điểm liên tục cho segment line
-  var continuousSegmentPoints = [];
-  model.model.forEach(function(seg, idx) {
-    var startVal = seg.slope * seg.start + seg.intercept;
-    var endVal = seg.slope * seg.end + seg.intercept;
-
-    if (idx === 0) {
-      continuousSegmentPoints.push([new Date(seg.start), startVal]);
+    
+    // Chỉ hiển thị một bảng ánh xạ thời gian chung cho tất cả các chỉ số
+    if (chartData[indicesToShow[0]].length > 0) {
+      // Thêm bảng ánh xạ giữa thời gian chuẩn hóa và thời gian thực
+      var timeMapPanel = ui.Panel({
+        layout: ui.Panel.Layout.flow('vertical'),
+        style: {margin: '10px 0', padding: '5px', border: '1px solid #ccc'}
+      });
+      
+      timeMapPanel.add(ui.Label('Bảng ánh xạ thời gian chuẩn hóa:', 
+        {fontWeight: 'bold', fontSize: '12px', margin: '0 0 5px 0'}));
+      
+      // Tạo một bảng đơn giản hiển thị mối tương quan
+      var timeMapTable = ui.Panel({
+        layout: ui.Panel.Layout.flow('vertical'),
+        style: {fontSize: '11px', margin: '0'}
+      });
+      
+      // Thêm header cho bảng
+      var headerRow = ui.Panel({
+        layout: ui.Panel.Layout.flow('horizontal'),
+        style: {margin: '2px 0', fontWeight: 'bold'}
+      });
+      
+      headerRow.add(ui.Label('T.gian chuẩn hóa', {width: '40px'}));
+      headerRow.add(ui.Label('Kỳ', {width: '120px'}));
+      headerRow.add(ui.Label('Ngày', {width: '100px'}));
+      
+      timeMapTable.add(headerRow);
+      
+      // Thêm ánh xạ từ dữ liệu (chỉ lấy từ chỉ số đầu tiên vì thời gian giống nhau cho tất cả)
+      var firstIndex = indicesToShow[0];
+      chartData[firstIndex].forEach(function(item, idx) {
+        var mapRow = ui.Panel({
+          layout: ui.Panel.Layout.flow('horizontal'),
+          style: {margin: '2px 0'}
+        });
+        
+        mapRow.add(ui.Label(item.x.toFixed(1), {width: '40px'}));
+        mapRow.add(ui.Label(item.periodId + (item.interpolated ? ' (NỘI SUY)' : ''), 
+          {width: '120px'}));
+        mapRow.add(ui.Label(item.originalDate.toISOString().split('T')[0], 
+          {width: '100px'}));
+        
+        timeMapTable.add(mapRow);
+      });
+      
+      timeMapPanel.add(timeMapTable);
+      chartContainer.add(timeMapPanel);
     }
-    continuousSegmentPoints.push([new Date(seg.end), endVal]);
+  }
+  
+  // Hiển thị biểu đồ mặc định (NDBI)
+  updateChartDisplay('ndbi');
+  
+  // Thêm nút đóng biểu đồ
+  var closeButton = ui.Button({
+    label: 'Đóng biểu đồ',
+    onClick: function() {
+      chartPanel.style().set('shown', false);
+    },
+    style: {margin: '10px 0 0 0'}
   });
-
-  // 3. Vẽ LineChart liên tục
-  var segmentLineChart = ui.Chart.array.values({
-    array: continuousSegmentPoints.map(function(p) { return [p[1]]; }),
-    axis: 0,
-    xLabels: continuousSegmentPoints.map(function(p) { return p[0].toISOString().split('T')[0]; })
-  }).setChartType('LineChart')
-    .setOptions({
-      lineWidth: 4,
-      colors: ['red'],
-      pointSize: 0,
-      hAxis: { slantedText: true, slantedTextAngle: 45 },
-      vAxis: { title: '' },
-      legend: { position: 'none' }
-    });
-
-  globalChartContainer.add(segmentLineChart);
-
-  // 4. Panel thông tin về model
-  var infoPanel = ui.Panel();
-  infoPanel.add(ui.Label('Số đoạn: ' + model.model.length));
-  infoPanel.add(ui.Label('MSE: ' + model.evaluation.mse.toFixed(6)));
-  model.model.forEach(function(seg, idx) {
-    var start = new Date(seg.start).toISOString().split('T')[0];
-    var end = new Date(seg.end).toISOString().split('T')[0];
-    infoPanel.add(ui.Label('Đoạn ' + (idx+1) + ': ' + start + ' - ' + end + ', Độ dốc: ' + seg.slope.toFixed(6)));
-  });
-  globalChartContainer.add(infoPanel);
+  chartPanel.add(closeButton);
 }
-
-
-
-// Nút kích hoạt LandTrendr
-var analyzeLandTrendrButton = ui.Button({
-  label: 'Phân tích LandTrendr',
-  onClick: function() {
-    if (globalTimeSeriesResults && globalTimeSeriesResults.length > 0) {
-      var selectedIdx = globalIndexSelectForChart ? globalIndexSelectForChart.getValue() : 'ndbi';
-      if (selectedIdx === 'all' || selectedIdx === 'all_urban') selectedIdx = 'ndbi';
-      analyzeLandTrendrLike(globalTimeSeriesResults, selectedIdx);
-    } else {
-      showError('Không có dữ liệu để phân tích. Vui lòng chọn điểm.');
-    }
-  },
-  style: {margin: '5px 0'}
-});
-
-
 
 //==========================================================================================//
 

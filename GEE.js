@@ -1433,6 +1433,7 @@ function createTimeSeriesDataTable(timeSeriesResults, indices, point) {
 
 //==========================================================================================//
 // Hàm hiển thị biểu đồ chuỗi thời gian với trục thời gian chuẩn hóa
+var chartContainer; 
 function displayTimeSeriesChart(timeSeriesResults, indices) {
   // Xóa nội dung cũ
   chartPanel.clear();
@@ -1511,12 +1512,30 @@ function displayTimeSeriesChart(timeSeriesResults, indices) {
   chartPanel.add(ui.Label('Chọn chỉ số để hiển thị:'));
   chartPanel.add(indexSelectForChart);
   
+// === Nút kích hoạt fitting theo kiểu LandTrendr đơn giản ===
+  var fittingButton = ui.Button({
+    label: 'Phân tích fitting (LandTrendr-style)',
+    onClick: function() {
+      var selectedIndex = indexSelectForChart.getValue();
+      if (!selectedIndex || !chartData[selectedIndex] || chartData[selectedIndex].length < 6) {
+        chartContainer.clear();
+        chartContainer.add(ui.Label('Không đủ dữ liệu để fitting.', {color: 'red'}));
+        return;
+      }
+  
+      // Gọi hàm fitting
+      performPiecewiseFitting(chartData[selectedIndex], selectedIndex);
+    },
+    style: {margin: '5px 0'}
+  });
+  chartPanel.add(fittingButton);
+
   // Panel để chứa biểu đồ
-  var chartContainer = ui.Panel();
+  chartContainer = ui.Panel();
   chartPanel.add(chartContainer);
   
   // Thêm chú thích về trục thời gian chuẩn hóa
-  chartPanel.add(ui.Label('Trục thời gian đã được chuẩn hóa từ 0.0 đến 1.0', 
+  chartPanel.add(ui.Label('Trục thời gian đã được chuẩn hóa', 
     {fontSize: '12px', margin: '5px 0', fontStyle: 'italic'}));
   
   // Hàm cập nhật hiển thị biểu đồ dựa trên lựa chọn
@@ -1664,6 +1683,110 @@ function displayTimeSeriesChart(timeSeriesResults, indices) {
 }
 
 //==========================================================================================//
+function performPiecewiseFitting(dataPoints, indexLabel) {
+  chartContainer.clear();
+
+  var xDates = dataPoints.map(function(p) {
+    return p.originalDate.toISOString().split('T')[0];
+  });
+
+  // Chuyển đổi dữ liệu thành 2 mảng
+  var x = dataPoints.map(function(p) { return parseFloat(p.x); });
+  var y = dataPoints.map(function(p) { return p.y; });
+
+  var maxSegments = 3;
+  var bestFit = null;
+  var bestRmse = Infinity;
+
+  // Hàm fitting đoạn thẳng đơn giản
+  function fitSegments(breaks) {
+    var segments = [];
+    var fittedY = [];
+    var totalSqError = 0;
+
+    for (var i = 0; i < breaks.length - 1; i++) {
+      var i0 = breaks[i];
+      var i1 = breaks[i + 1];
+
+      var xSeg = x.slice(i0, i1 + 1);
+      var ySeg = y.slice(i0, i1 + 1);
+
+      // Fit đoạn tuyến tính bằng least squares
+      var n = xSeg.length;
+      var sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+      for (var j = 0; j < n; j++) {
+        sumX += xSeg[j];
+        sumY += ySeg[j];
+        sumXY += xSeg[j] * ySeg[j];
+        sumXX += xSeg[j] * xSeg[j];
+      }
+      var slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+      var intercept = (sumY - slope * sumX) / n;
+
+      for (var j = 0; j < n; j++) {
+        var yFit = slope * xSeg[j] + intercept;
+        fittedY.push(yFit);
+        totalSqError += Math.pow(ySeg[j] - yFit, 2);
+      }
+
+      segments.push({slope: slope, intercept: intercept, range: [i0, i1]});
+    }
+
+    var rmse = Math.sqrt(totalSqError / x.length);
+    return {segments: segments, fitted: fittedY, rmse: rmse};
+  }
+
+  for (var segments = 1; segments <= maxSegments; segments++) {
+    var breakIndices = [0];
+    var step = Math.floor((x.length - 1) / segments);
+    for (var i = 1; i < segments; i++) {
+      breakIndices.push(i * step);
+    }
+    breakIndices.push(x.length - 1);
+
+    var result = fitSegments(breakIndices);
+    if (result.rmse < bestRmse) {
+      bestRmse = result.rmse;
+      bestFit = result;
+    }
+  }
+
+  // Tạo biểu đồ mới
+  var chart = ui.Chart.array.values({
+    array: [y, bestFit.fitted],
+    axis: 1,
+    xLabels: xDates
+  })
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Fitting ' + indexLabel.toUpperCase(),
+    colors: ['grey', 'red'],
+    lineWidth: 2,
+    pointSize: 0,
+    legend: {position: 'top'},
+    hAxis: {   
+    title: 'Ngày',
+    slantedText: true,
+    slantedTextAngle: 45
+    },
+    vAxis: {title: 'Giá trị'},
+    series:{
+      0: {lineDashStyle: [4, 2]},
+      1: {lineWidth: 3},
+      }
+  });
+
+  chartContainer.add(chart);
+  chartContainer.add(ui.Label('RMSE: ' + bestRmse.toFixed(4), {color: 'green'}));
+}
+
+
+
+
+
+
+
+
 
 // Hàm hiển thị thông báo lỗi
 function showError(message) {
